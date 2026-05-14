@@ -195,6 +195,8 @@ func formatArrivalTimeVoiceLocalized(minutes int, lm *localization.LocalizationM
 	}
 }
 
+// ExtractStopID returns the first whitespace-delimited token of message.
+// The token is not validated here; callers must use validation.ValidateStopID (or equivalent) before using it as a stop ID.
 func ExtractStopID(message string) string {
 	message = strings.TrimSpace(message)
 

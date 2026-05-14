@@ -52,22 +52,10 @@ func TestResolveStopID(t *testing.T) {
 func TestGetArrivalsAndDepartures_Success(t *testing.T) {
 	mockCoverage := models.AgenciesWithCoverageResponse{
 		Data: struct {
-			LimitExceeded bool `json:"limitExceeded"`
-			List          []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			} `json:"list"`
+			LimitExceeded bool                       `json:"limitExceeded"`
+			List          []models.AgencyCoverageRow `json:"list"`
 		}{
-			List: []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			}{
+			List: []models.AgencyCoverageRow{
 				{AgencyID: "test", Lat: 47.6, LatSpan: 0.5, Lon: -122.3, LonSpan: 0.8},
 			},
 		},

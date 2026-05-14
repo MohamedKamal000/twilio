@@ -16,23 +16,11 @@ import (
 func TestInitializeCoverage_Success(t *testing.T) {
 	mockResponse := models.AgenciesWithCoverageResponse{
 		Data: struct {
-			LimitExceeded bool `json:"limitExceeded"`
-			List          []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			} `json:"list"`
+			LimitExceeded bool                       `json:"limitExceeded"`
+			List          []models.AgencyCoverageRow `json:"list"`
 		}{
 			LimitExceeded: false,
-			List: []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			}{
+			List: []models.AgencyCoverageRow{
 				{
 					AgencyID: "metro",
 					Lat:      47.6062,
@@ -86,22 +74,10 @@ func TestInitializeCoverage_Success(t *testing.T) {
 func TestInitializeCoverage_SingleAgency(t *testing.T) {
 	mockResponse := models.AgenciesWithCoverageResponse{
 		Data: struct {
-			LimitExceeded bool `json:"limitExceeded"`
-			List          []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			} `json:"list"`
+			LimitExceeded bool                       `json:"limitExceeded"`
+			List          []models.AgencyCoverageRow `json:"list"`
 		}{
-			List: []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			}{
+			List: []models.AgencyCoverageRow{
 				{
 					AgencyID: "unitrans",
 					Lat:      38.5553,
@@ -139,22 +115,10 @@ func TestInitializeCoverage_SingleAgency(t *testing.T) {
 func TestInitializeCoverage_NoAgencies(t *testing.T) {
 	mockResponse := models.AgenciesWithCoverageResponse{
 		Data: struct {
-			LimitExceeded bool `json:"limitExceeded"`
-			List          []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			} `json:"list"`
+			LimitExceeded bool                       `json:"limitExceeded"`
+			List          []models.AgencyCoverageRow `json:"list"`
 		}{
-			List: []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			}{},
+			List: []models.AgencyCoverageRow{},
 		},
 		Code: 200,
 		Text: "OK",
@@ -267,22 +231,10 @@ func TestSearchStops_WithCoverage(t *testing.T) {
 		case "/api/where/agencies-with-coverage.json":
 			mockCoverage := models.AgenciesWithCoverageResponse{
 				Data: struct {
-					LimitExceeded bool `json:"limitExceeded"`
-					List          []struct {
-						AgencyID string  `json:"agencyId"`
-						Lat      float64 `json:"lat"`
-						LatSpan  float64 `json:"latSpan"`
-						Lon      float64 `json:"lon"`
-						LonSpan  float64 `json:"lonSpan"`
-					} `json:"list"`
+					LimitExceeded bool                       `json:"limitExceeded"`
+					List          []models.AgencyCoverageRow `json:"list"`
 				}{
-					List: []struct {
-						AgencyID string  `json:"agencyId"`
-						Lat      float64 `json:"lat"`
-						LatSpan  float64 `json:"latSpan"`
-						Lon      float64 `json:"lon"`
-						LonSpan  float64 `json:"lonSpan"`
-					}{
+					List: []models.AgencyCoverageRow{
 						{
 							AgencyID: "test",
 							Lat:      47.6062,
@@ -336,13 +288,7 @@ func TestSearchStops_WithoutCoverage(t *testing.T) {
 func TestCalculateCoverageArea_EmptyAgencies(t *testing.T) {
 	client := NewOneBusAwayClient("test", "test")
 
-	agencies := []struct {
-		AgencyID string  `json:"agencyId"`
-		Lat      float64 `json:"lat"`
-		LatSpan  float64 `json:"latSpan"`
-		Lon      float64 `json:"lon"`
-		LonSpan  float64 `json:"lonSpan"`
-	}{}
+	agencies := []models.AgencyCoverageRow{}
 
 	coverage := client.calculateCoverageArea(agencies)
 
@@ -407,23 +353,11 @@ func TestFindAllMatchingStops_SingleMatch(t *testing.T) {
 
 	mockCoverageResp := models.AgenciesWithCoverageResponse{
 		Data: struct {
-			LimitExceeded bool `json:"limitExceeded"`
-			List          []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			} `json:"list"`
+			LimitExceeded bool                       `json:"limitExceeded"`
+			List          []models.AgencyCoverageRow `json:"list"`
 		}{
 			LimitExceeded: false,
-			List: []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			}{
+			List: []models.AgencyCoverageRow{
 				{AgencyID: "1", Lat: 47.6062, LatSpan: 0.5, Lon: -122.3321, LonSpan: 0.8},
 			},
 		},
@@ -570,23 +504,11 @@ func TestFindAllMatchingStops_MultipleMatches(t *testing.T) {
 
 	mockCoverageResp := models.AgenciesWithCoverageResponse{
 		Data: struct {
-			LimitExceeded bool `json:"limitExceeded"`
-			List          []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			} `json:"list"`
+			LimitExceeded bool                       `json:"limitExceeded"`
+			List          []models.AgencyCoverageRow `json:"list"`
 		}{
 			LimitExceeded: false,
-			List: []struct {
-				AgencyID string  `json:"agencyId"`
-				Lat      float64 `json:"lat"`
-				LatSpan  float64 `json:"latSpan"`
-				Lon      float64 `json:"lon"`
-				LonSpan  float64 `json:"lonSpan"`
-			}{
+			List: []models.AgencyCoverageRow{
 				{AgencyID: "1", Lat: 47.6062, LatSpan: 0.5, Lon: -122.3321, LonSpan: 0.8},
 				{AgencyID: "40", Lat: 47.5, LatSpan: 0.3, Lon: -122.2, LonSpan: 0.4},
 			},

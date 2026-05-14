@@ -438,6 +438,24 @@ func logAgencyIDsForSearch(source string, ids []string) {
 	log.Printf("[OBA] agency search list (%s, %d): %s", source, len(ids), strings.Join(ids, ", "))
 }
 
+// extractAgencyIDsFromCoverageList returns unique agency IDs from agencies-with-coverage data.list, preserving API order.
+func extractAgencyIDsFromCoverageList(list []models.AgencyCoverageRow) []string {
+	ids := make([]string, 0, len(list))
+	seen := make(map[string]struct{}, len(list))
+	for _, a := range list {
+		id := strings.TrimSpace(a.AgencyID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // ensureAgencyIDsForSearch refreshes the agency ID list used by FindAllMatchingStops.
 // It is cached for ~1 day and sourced from the OneBusAway agencies-with-coverage endpoint.
 func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
@@ -456,7 +474,8 @@ func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
 			// Keep searching with stale-but-available IDs.
 			c.config.AgencyPriority = ids
 			logAgencyIDsForSearch("cache expired (stale coverage_agency_ids)", ids)
-			return fmt.Errorf("using cached agencies-with-coverage data due to cache refresh failure")
+			log.Printf("[OBA] agencies-with-coverage cache expired; continuing with stale agency IDs until refresh succeeds")
+			return nil
 		}
 	}
 
@@ -520,19 +539,7 @@ func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
 	}
 
 	// Extract unique agency IDs preserving API order.
-	ids := make([]string, 0, len(coverageResp.Data.List))
-	seen := make(map[string]struct{}, len(coverageResp.Data.List))
-	for _, a := range coverageResp.Data.List {
-		id := strings.TrimSpace(a.AgencyID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
+	ids := extractAgencyIDsFromCoverageList(coverageResp.Data.List)
 	if len(ids) == 0 {
 		return fmt.Errorf("agencies-with-coverage returned no valid agency IDs")
 	}
@@ -673,19 +680,7 @@ func (c *OneBusAwayClient) InitializeCoverage() error {
 
 	// Apply agency IDs to stop searching and cache them for ~1 day.
 	// (This reuses the agencies-with-coverage response we already fetched.)
-	agencyIDs := make([]string, 0, len(coverageResp.Data.List))
-	seen := make(map[string]struct{}, len(coverageResp.Data.List))
-	for _, a := range coverageResp.Data.List {
-		id := strings.TrimSpace(a.AgencyID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		agencyIDs = append(agencyIDs, id)
-	}
+	agencyIDs := extractAgencyIDsFromCoverageList(coverageResp.Data.List)
 
 	if len(agencyIDs) > 0 {
 		c.config.AgencyPriority = agencyIDs
@@ -705,13 +700,7 @@ func (c *OneBusAwayClient) GetCoverageArea() *models.CoverageArea {
 	return c.coverageArea
 }
 
-func (c *OneBusAwayClient) calculateCoverageArea(agencies []struct {
-	AgencyID string  `json:"agencyId"`
-	Lat      float64 `json:"lat"`
-	LatSpan  float64 `json:"latSpan"`
-	Lon      float64 `json:"lon"`
-	LonSpan  float64 `json:"lonSpan"`
-}) *models.CoverageArea {
+func (c *OneBusAwayClient) calculateCoverageArea(agencies []models.AgencyCoverageRow) *models.CoverageArea {
 	if len(agencies) == 0 {
 		return &models.CoverageArea{
 			CenterLat: 47.6062,
