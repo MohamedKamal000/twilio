@@ -148,10 +148,9 @@ func (h *Handler) respondVoiceStopDisambiguation(c *gin.Context, fromPhone, stop
 		NumDigits:     "1",
 		InnerElements: innerElts,
 	}
+	// GetString falls back to the default locale and ultimately the key name, so
+	// it never returns an empty string; a manual fallback here would be dead code.
 	timeoutMsg := h.LocalizationManager.GetString("voice.timeout", language)
-	if timeoutMsg == "" {
-		timeoutMsg = h.LocalizationManager.GetString("voice.error.timeout", language)
-	}
 	timeoutSay := &twiml.VoiceSay{
 		Message:  timeoutMsg,
 		Language: language,
@@ -159,6 +158,9 @@ func (h *Handler) respondVoiceStopDisambiguation(c *gin.Context, fromPhone, stop
 	twimlResult, err := twiml.Voice([]twiml.Element{gather, timeoutSay})
 	if err != nil {
 		log.Printf("Failed to generate TwiML gather: %v", err)
+		// The session was persisted above; if we can't deliver the options, clear
+		// it so a later stray single-digit press isn't treated as a stale choice.
+		h.SessionStore.ClearDisambiguationSession(fromPhone)
 		c.String(http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -272,11 +274,18 @@ func (h *Handler) getAndFormatVoiceArrivalsWithSession(c *gin.Context, phoneNumb
 
 	// Get the human-readable stop name instead of using the technical stop ID
 	stopName := ""
-	if stopInfo, err := h.OBAClient.GetStopInfo(fullStopID); err == nil && stopInfo != nil {
+	stopInfo, err := h.OBAClient.GetStopInfo(fullStopID)
+	if err != nil {
+		log.Printf("Failed to get stop info for %s: %v", fullStopID, err)
+	}
+	if err == nil && stopInfo != nil && stopInfo.StopName != "" {
 		stopName = stopInfo.StopName
-	} else {
-		// Fall back to stop ID if we can't get the stop name
+	} else if obaResp.Data.Entry.StopId != "" {
+		// Fall back to the response's stop ID if we can't get the stop name.
 		stopName = obaResp.Data.Entry.StopId
+	} else {
+		// Last resort: fullStopID is always non-empty, so we never read a blank name.
+		stopName = fullStopID
 	}
 
 	language := h.getLanguageFromRequest(c)

@@ -100,3 +100,30 @@ func TestManagerMultipleLanguages(t *testing.T) {
 	assert.True(t, manager.IsSupported("es-US"))
 	assert.False(t, manager.IsSupported("fr-US"))
 }
+
+// TestGetStringBrandWithPercent ensures a brand name containing a percent sign
+// is not misinterpreted as a format directive when the string also has params.
+// Brand substitution must happen AFTER fmt.Sprintf.
+func TestGetStringBrandWithPercent(t *testing.T) {
+	tempDir := t.TempDir()
+	localesDir := filepath.Join(tempDir, "locales")
+	require.NoError(t, os.MkdirAll(localesDir, 0755))
+
+	// String with both a {brand} placeholder and a %s format param.
+	content := `{
+		"sms.example": "{brand}: route %s"
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(localesDir, "en-US.json"), []byte(content), 0644))
+
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(tempDir))
+	defer func() { _ = os.Chdir(originalDir) }()
+
+	manager, err := NewManager("en-US")
+	require.NoError(t, err)
+
+	manager.SetBrandDisplayName("100% Transit")
+	got := manager.GetString("sms.example", "en-US", "Link")
+	assert.Equal(t, "100% Transit: route Link", got)
+}

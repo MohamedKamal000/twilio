@@ -123,14 +123,21 @@ func (lm *LocalizationManager) GetString(key, language string, params ...interfa
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
+	// Apply params with fmt.Sprintf BEFORE substituting {brand}, so a brand name
+	// containing a percent sign (e.g. "100% Transit") is never parsed as a format
+	// directive. The {brand} placeholder itself is not a format verb, so it
+	// passes through Sprintf untouched.
+	format := func(str string) string {
+		if len(params) > 0 {
+			str = fmt.Sprintf(str, params...)
+		}
+		return lm.applyBrandLocked(str)
+	}
+
 	// Try requested language first
 	if langStrings, exists := lm.strings[language]; exists {
 		if str, exists := langStrings[key]; exists {
-			str = lm.applyBrandLocked(str)
-			if len(params) > 0 {
-				return fmt.Sprintf(str, params...)
-			}
-			return str
+			return format(str)
 		}
 	}
 
@@ -140,11 +147,7 @@ func (lm *LocalizationManager) GetString(key, language string, params ...interfa
 			if language != lm.defaultLanguage {
 				log.Printf("Using fallback language for key: %s, requested: %s", key, language)
 			}
-			str = lm.applyBrandLocked(str)
-			if len(params) > 0 {
-				return fmt.Sprintf(str, params...)
-			}
-			return str
+			return format(str)
 		}
 	}
 

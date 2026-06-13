@@ -382,6 +382,10 @@ type OneBusAwayClient struct {
 	config         *ClientConfig
 	circuitBreaker *CircuitBreaker
 	metrics        *Metrics
+	// agencyMu guards config.AgencyPriority, which is read by getAgencyList (from
+	// goroutines spawned by FindAllMatchingStops) and written by
+	// ensureAgencyIDsForSearch, InitializeCoverage, and SetAgencyPriority.
+	agencyMu sync.RWMutex
 }
 
 func NewOneBusAwayClient(baseURL, apiKey string) *OneBusAwayClient {
@@ -421,12 +425,24 @@ func NewOneBusAwayClientWithConfig(baseURL, apiKey string, config *ClientConfig)
 	}, nil
 }
 
-// getAgencyList returns the configured agency list with priority ordering
+// getAgencyList returns the configured agency list with priority ordering.
+//
+// Writers always replace the AgencyPriority slice (never mutate it in place), so
+// the returned slice header is safe to use after the read lock is released.
 func (c *OneBusAwayClient) getAgencyList() []string {
+	c.agencyMu.RLock()
+	defer c.agencyMu.RUnlock()
 	if len(c.config.AgencyPriority) > 0 {
 		return c.config.AgencyPriority
 	}
 	return c.config.DefaultAgencies
+}
+
+// storeAgencyPriority replaces the agency priority list under agencyMu.
+func (c *OneBusAwayClient) storeAgencyPriority(ids []string) {
+	c.agencyMu.Lock()
+	defer c.agencyMu.Unlock()
+	c.config.AgencyPriority = ids
 }
 
 // logAgencyIDsForSearch writes the agency ID list used for stop lookup (from cache or API).
@@ -462,21 +478,32 @@ func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
 	// 1) Fast path: valid cache
 	if cached, found := c.cache.Get(coverageAgencyIDsCacheKey); found {
 		if ids, ok := cached.([]string); ok && len(ids) > 0 {
-			c.config.AgencyPriority = ids
+			c.storeAgencyPriority(ids)
 			logAgencyIDsForSearch("cache hit (coverage_agency_ids)", ids)
 			return nil
 		}
 	}
 
-	// 2) Graceful degradation: expired cached data
+	// 2) Capture expired cached data as a fallback, but do NOT short-circuit: we
+	// still attempt a refresh below so the daily refresh actually happens. Stale
+	// IDs are only applied if that refresh fails (graceful degradation).
+	var staleIDs []string
 	if cachedData, found, _ := c.cache.GetExpired(coverageAgencyIDsCacheKey); found {
 		if ids, ok := cachedData.([]string); ok && len(ids) > 0 {
-			// Keep searching with stale-but-available IDs.
-			c.config.AgencyPriority = ids
-			logAgencyIDsForSearch("cache expired (stale coverage_agency_ids)", ids)
-			log.Printf("[OBA] agencies-with-coverage cache expired; continuing with stale agency IDs until refresh succeeds")
+			staleIDs = ids
+		}
+	}
+
+	// degradeToStale applies stale agency IDs when a refresh fails so stop search
+	// keeps working; it returns nil if stale IDs exist, otherwise the refresh error.
+	degradeToStale := func(reason string, refreshErr error) error {
+		if len(staleIDs) > 0 {
+			c.storeAgencyPriority(staleIDs)
+			logAgencyIDsForSearch("stale fallback (coverage_agency_ids)", staleIDs)
+			log.Printf("[OBA] agencies-with-coverage refresh failed (%s); continuing with stale agency IDs: %v", reason, refreshErr)
 			return nil
 		}
+		return refreshErr
 	}
 
 	// 3) Fetch from API
@@ -526,26 +553,26 @@ func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
 		if strings.Contains(err.Error(), "circuit breaker is open") {
 			c.metrics.IncrementCircuitBreakerOpen()
 		}
-		return err
+		return degradeToStale("request error", err)
 	}
 
 	c.metrics.IncrementAPICall(responseTime)
 
 	if coverageResp.Code != 200 {
-		return fmt.Errorf("API error: %s (code %d)", coverageResp.Text, coverageResp.Code)
+		return degradeToStale("api error", fmt.Errorf("API error: %s (code %d)", coverageResp.Text, coverageResp.Code))
 	}
 	if len(coverageResp.Data.List) == 0 {
-		return fmt.Errorf("no agencies-with-coverage agencies found")
+		return degradeToStale("empty agency list", fmt.Errorf("no agencies-with-coverage agencies found"))
 	}
 
 	// Extract unique agency IDs preserving API order.
 	ids := extractAgencyIDsFromCoverageList(coverageResp.Data.List)
 	if len(ids) == 0 {
-		return fmt.Errorf("agencies-with-coverage returned no valid agency IDs")
+		return degradeToStale("no valid agency IDs", fmt.Errorf("agencies-with-coverage returned no valid agency IDs"))
 	}
 
 	// Apply to search ordering.
-	c.config.AgencyPriority = ids
+	c.storeAgencyPriority(ids)
 
 	// Cache for ~1 day.
 	c.cache.Set(coverageAgencyIDsCacheKey, ids, agenciesCacheTTLMinutes*time.Minute)
@@ -573,7 +600,7 @@ func (c *OneBusAwayClient) SetAgencyPriority(agencies []string) error {
 		}
 	}
 
-	c.config.AgencyPriority = agencies
+	c.storeAgencyPriority(agencies)
 	return nil
 }
 
@@ -590,8 +617,12 @@ func (c *OneBusAwayClient) InitializeCoverage() error {
 			c.metrics.IncrementCacheHits()
 			c.coverageArea = coverageArea
 			// Even if coverage areas are cached, we still need to refresh
-			// agency IDs used for stop searching once per day.
-			_ = c.ensureAgencyIDsForSearch()
+			// agency IDs used for stop searching once per day. Log on failure so
+			// that silently falling back to the hardcoded agency defaults (e.g.
+			// API down, circuit breaker open, no stale cache) is diagnosable.
+			if err := c.ensureAgencyIDsForSearch(); err != nil {
+				log.Printf("Failed to refresh agency IDs for search (using existing agency priority): %v", err)
+			}
 			return nil
 		}
 	}
@@ -683,7 +714,7 @@ func (c *OneBusAwayClient) InitializeCoverage() error {
 	agencyIDs := extractAgencyIDsFromCoverageList(coverageResp.Data.List)
 
 	if len(agencyIDs) > 0 {
-		c.config.AgencyPriority = agencyIDs
+		c.storeAgencyPriority(agencyIDs)
 		c.cache.Set(coverageAgencyIDsCacheKey, agencyIDs, agenciesCacheTTLMinutes*time.Minute)
 		logAgencyIDsForSearch("InitializeCoverage (agencies-with-coverage response)", agencyIDs)
 	}
