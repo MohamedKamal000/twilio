@@ -17,6 +17,7 @@ type Handler struct {
 	SessionStore        *common.SessionStore
 	LocalizationManager *localization.LocalizationManager
 	ErrorHandler        *common.ErrorHandler
+	arrivalFilterConfig common.ArrivalFilterConfig
 	analyticsManager    middleware.AnalyticsManager
 	analyticsHashSalt   string
 }
@@ -27,6 +28,11 @@ func NewHandler(obaClient client.OneBusAwayClientInterface, locManager *localiza
 		SessionStore:        common.NewSessionStore(),
 		LocalizationManager: locManager,
 		ErrorHandler:        common.NewErrorHandler(locManager),
+		arrivalFilterConfig: common.ArrivalFilterConfig{
+			Enabled:               false,
+			MaxPredictedEarlyMins: 15,
+			FallbackToUnfiltered:  true,
+		},
 	}
 }
 
@@ -39,6 +45,10 @@ func (h *Handler) Close() {
 func (h *Handler) SetAnalytics(analyticsManager middleware.AnalyticsManager, hashSalt string) {
 	h.analyticsManager = analyticsManager
 	h.analyticsHashSalt = hashSalt
+}
+
+func (h *Handler) SetArrivalFilterConfig(cfg common.ArrivalFilterConfig) {
+	h.arrivalFilterConfig = cfg
 }
 
 // getLanguageFromRequest extracts language from URL parameter or defaults to primary language

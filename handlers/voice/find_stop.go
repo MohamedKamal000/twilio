@@ -10,6 +10,7 @@ import (
 	"github.com/twilio/twilio-go/twiml"
 
 	"oba-twilio/formatters"
+	"oba-twilio/handlers/common"
 	"oba-twilio/models"
 	"oba-twilio/validation"
 )
@@ -43,36 +44,24 @@ func (h *Handler) HandleFindStop(c *gin.Context) {
 
 	c.Header("Content-Type", "text/xml")
 
-	// Check if user is responding to a disambiguation request
 	if choice := h.parseDisambiguationChoice(req.Digits); choice > 0 {
-		// Additional validation for the choice
-		session := h.SessionStore.GetDisambiguationSession(req.From)
-		if session != nil {
+		if session := h.SessionStore.GetDisambiguationSession(req.From); session != nil {
 			maxChoices := len(session.StopOptions)
 			if maxChoices > 9 {
-				maxChoices = 9 // Voice interface limits to single digits
+				maxChoices = 9
 			}
 			if err := validation.ValidateDisambiguationChoice(req.Digits, maxChoices); err != nil {
 				log.Printf("Invalid disambiguation choice from %s: %v", req.From, err)
 				language := h.getLanguageFromRequest(c)
 				errorMsg := h.LocalizationManager.GetString("voice.error.invalid_choice", language, maxChoices)
-				say := &twiml.VoiceSay{
-					Message:  errorMsg,
-					Language: language,
-				}
-				if twimlResult, err := twiml.Voice([]twiml.Element{say}); err != nil {
-					c.String(http.StatusInternalServerError, err.Error())
-				} else {
-					c.String(http.StatusOK, twimlResult)
-				}
+				h.respondVoiceSay(c, language, errorMsg)
 				return
 			}
+			h.handleVoiceDisambiguationChoice(c, req, choice)
+			return
 		}
-		h.handleVoiceDisambiguationChoice(c, req, choice)
-		return
 	}
 
-	// Clear any existing disambiguation session for new queries
 	h.SessionStore.ClearDisambiguationSession(req.From)
 
 	stopID := req.Digits
@@ -82,15 +71,7 @@ func (h *Handler) HandleFindStop(c *gin.Context) {
 		if errorMsg == "" {
 			errorMsg = "I didn't receive any digits. Please try calling again."
 		}
-		say := &twiml.VoiceSay{
-			Message:  errorMsg,
-			Language: language,
-		}
-		if twimlResult, err := twiml.Voice([]twiml.Element{say}); err != nil {
-			c.String(http.StatusInternalServerError, err.Error())
-		} else {
-			c.String(http.StatusOK, twimlResult)
-		}
+		h.respondVoiceSay(c, language, errorMsg)
 		return
 	}
 
@@ -99,15 +80,7 @@ func (h *Handler) HandleFindStop(c *gin.Context) {
 		log.Printf("Invalid stop ID from %s: %s, error: %v", req.From, stopID, err)
 		language := h.getLanguageFromRequest(c)
 		errorMsg := h.LocalizationManager.GetString("voice.error.invalid_stop_id", language)
-		say := &twiml.VoiceSay{
-			Message:  errorMsg,
-			Language: language,
-		}
-		if twimlResult, err := twiml.Voice([]twiml.Element{say}); err != nil {
-			c.String(http.StatusInternalServerError, err.Error())
-		} else {
-			c.String(http.StatusOK, twimlResult)
-		}
+		h.respondVoiceSay(c, language, errorMsg)
 		return
 	}
 
@@ -125,66 +98,71 @@ func (h *Handler) HandleFindStop(c *gin.Context) {
 		if errorMsg == "" {
 			errorMsg = "Sorry, I couldn't find any stops with that ID. Please check the stop ID and try again."
 		}
-		say := &twiml.VoiceSay{
-			Message:  errorMsg,
-			Language: language,
-		}
-		if twimlResult, err := twiml.Voice([]twiml.Element{say}); err != nil {
-			c.String(http.StatusInternalServerError, err.Error())
-		} else {
-			c.String(http.StatusOK, twimlResult)
-		}
+		h.respondVoiceSay(c, language, errorMsg)
 		return
 	}
 
-	// If multiple stops found, ask user to disambiguate
 	if len(matchingStops) > 1 {
-		disambiguationMsg := h.formatVoiceDisambiguationMessage(c, matchingStops, stopID)
-
-		// Store disambiguation session
-		session := &models.DisambiguationSession{
-			StopOptions: matchingStops,
-		}
-		if err := h.SessionStore.SetDisambiguationSession(req.From, session); err != nil {
-			language := h.getLanguageFromRequest(c)
-			h.ErrorHandler.HandleInternalError(c, err, "voice", language)
-			return
-		}
-
-		// Use TwiML Gather to collect the user's choice
-		language := h.getLanguageFromRequest(c)
-
-		innerElts := []twiml.Element{
-			&twiml.VoiceSay{
-				Message:  disambiguationMsg,
-				Language: language,
-			},
-		}
-
-		gather := &twiml.VoiceGather{
-			Action:        fmt.Sprintf("/voice/find_stop?lang=%s", language),
-			Method:        "POST",
-			Timeout:       "10",
-			NumDigits:     "1",
-			InnerElements: innerElts,
-		}
-
-		timeoutSay := &twiml.VoiceSay{
-			Message:  h.LocalizationManager.GetString("voice.error.timeout", language),
-			Language: language,
-		}
-
-		if twimlResult, err := twiml.Voice([]twiml.Element{gather, timeoutSay}); err != nil {
-			log.Printf("Failed to generate TwiML gather: %v", err)
-			c.String(http.StatusInternalServerError, err.Error())
-		} else {
-			c.String(http.StatusOK, twimlResult)
-		}
+		h.respondVoiceStopDisambiguation(c, req.From, stopID, matchingStops)
 		return
 	}
 
-	// Single stop found, get arrivals directly
 	h.getAndFormatVoiceArrivalsWithSession(c, req.From, matchingStops[0].FullStopID, 0)
+}
+
+func (h *Handler) respondVoiceSay(c *gin.Context, language, message string) {
+	say := &twiml.VoiceSay{
+		Message:  message,
+		Language: language,
+	}
+	twimlResult, err := twiml.Voice([]twiml.Element{say})
+	if err != nil {
+		c.String(http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.String(http.StatusOK, twimlResult)
+}
+
+func (h *Handler) respondVoiceStopDisambiguation(c *gin.Context, fromPhone, stopID string, matchingStops []models.StopOption) {
+	disambiguationMsg := h.formatVoiceDisambiguationMessage(c, matchingStops, stopID)
+	session := &models.DisambiguationSession{
+		StopOptions: matchingStops,
+	}
+	if err := h.SessionStore.SetDisambiguationSession(fromPhone, session); err != nil {
+		language := h.getLanguageFromRequest(c)
+		h.ErrorHandler.HandleInternalError(c, err, "voice", language)
+		return
+	}
+
+	language := h.getLanguageFromRequest(c)
+	innerElts := []twiml.Element{
+		&twiml.VoiceSay{
+			Message:  disambiguationMsg,
+			Language: language,
+		},
+	}
+	gather := &twiml.VoiceGather{
+		Action:        fmt.Sprintf("/voice/find_stop?lang=%s", language),
+		Method:        "POST",
+		Timeout:       "10",
+		NumDigits:     "1",
+		InnerElements: innerElts,
+	}
+	timeoutMsg := h.LocalizationManager.GetString("voice.timeout", language)
+	if timeoutMsg == "" {
+		timeoutMsg = h.LocalizationManager.GetString("voice.error.timeout", language)
+	}
+	timeoutSay := &twiml.VoiceSay{
+		Message:  timeoutMsg,
+		Language: language,
+	}
+	twimlResult, err := twiml.Voice([]twiml.Element{gather, timeoutSay})
+	if err != nil {
+		log.Printf("Failed to generate TwiML gather: %v", err)
+		c.String(http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.String(http.StatusOK, twimlResult)
 }
 
 // parseDisambiguationChoice checks if the input digits represent a single-digit choice (1-9)
@@ -201,7 +179,7 @@ func (h *Handler) parseDisambiguationChoice(digits string) int {
 	return choice
 }
 
-// handleVoiceDisambiguationChoice processes the user's disambiguation choice
+// handleVoiceDisambiguationChoice processes the user's disambiguation choice (multiple stops for one ID).
 func (h *Handler) handleVoiceDisambiguationChoice(c *gin.Context, req models.TwilioVoiceRequest, choice int) {
 	session := h.SessionStore.GetDisambiguationSession(req.From)
 	if session == nil {
@@ -210,37 +188,22 @@ func (h *Handler) handleVoiceDisambiguationChoice(c *gin.Context, req models.Twi
 		if errorMsg == "" {
 			errorMsg = "No active selection. Please call again and enter a stop ID to get started."
 		}
-		say := &twiml.VoiceSay{
-			Message:  errorMsg,
-			Language: language,
-		}
-		if twimlResult, err := twiml.Voice([]twiml.Element{say}); err != nil {
-			c.String(http.StatusInternalServerError, err.Error())
-		} else {
-			c.String(http.StatusOK, twimlResult)
-		}
+		h.respondVoiceSay(c, language, errorMsg)
 		return
 	}
 
-	if choice < 1 || choice > len(session.StopOptions) {
-		maxChoice := len(session.StopOptions)
-		if maxChoice > 9 {
-			maxChoice = 9 // Limit voice choices to single digits
-		}
+	effectiveMax := len(session.StopOptions)
+	if effectiveMax > 9 {
+		effectiveMax = 9
+	}
+
+	if choice < 1 || choice > effectiveMax {
 		language := h.getLanguageFromRequest(c)
-		errorMsg := h.LocalizationManager.GetString("voice.error.invalid_choice", language, maxChoice)
+		errorMsg := h.LocalizationManager.GetString("voice.error.invalid_choice", language, effectiveMax)
 		if errorMsg == "" {
-			errorMsg = fmt.Sprintf("Please press a number between 1 and %d.", maxChoice)
+			errorMsg = fmt.Sprintf("Please press a number between 1 and %d.", effectiveMax)
 		}
-		say := &twiml.VoiceSay{
-			Message:  errorMsg,
-			Language: language,
-		}
-		if twimlResult, err := twiml.Voice([]twiml.Element{say}); err != nil {
-			c.String(http.StatusInternalServerError, err.Error())
-		} else {
-			c.String(http.StatusOK, twimlResult)
-		}
+		h.respondVoiceSay(c, language, errorMsg)
 		return
 	}
 
@@ -303,7 +266,9 @@ func (h *Handler) getAndFormatVoiceArrivalsWithSession(c *gin.Context, phoneNumb
 		return
 	}
 
-	arrivals := h.OBAClient.ProcessArrivals(obaResp)
+	arrivals := h.OBAClient.ProcessArrivals(obaResp, window)
+	filteredArrivals, excluded, fallbackUsed := common.FilterArrivals(arrivals, h.arrivalFilterConfig)
+	arrivals = filteredArrivals
 
 	// Get the human-readable stop name instead of using the technical stop ID
 	stopName := ""
@@ -315,7 +280,10 @@ func (h *Handler) getAndFormatVoiceArrivalsWithSession(c *gin.Context, phoneNumb
 	}
 
 	language := h.getLanguageFromRequest(c)
-	log.Printf("Formatting voice response for %s: stop=%s, arrivals=%d", phoneNumber, stopName, len(arrivals))
+	log.Printf(
+		"Formatting voice response for %s: stop=%s, arrivals=%d, excluded=%d, fallback=%t",
+		phoneNumber, stopName, len(arrivals), excluded, fallbackUsed,
+	)
 
 	message := formatters.FormatVoiceResponse(arrivals, stopName, h.LocalizationManager, language)
 	log.Printf("Voice message for %s: %s", phoneNumber, message)

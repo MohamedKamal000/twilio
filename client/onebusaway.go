@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,10 @@ const (
 	// coverageCacheTTLMinutes defines how long to cache coverage data (longer as it changes infrequently)
 	coverageCacheTTLMinutes = 60
 
+	// agenciesCacheTTLMinutes defines how long to cache agency IDs used for stop searching
+	// (we refresh once per day as requested).
+	agenciesCacheTTLMinutes = 24 * 60
+
 	// maxCacheEntries limits the number of cached responses
 	maxCacheEntries = 1000
 
@@ -39,6 +45,10 @@ const (
 	circuitBreakerFailureThreshold = 5
 	circuitBreakerTimeout          = 60 * time.Second
 	circuitBreakerRetryTimeout     = 30 * time.Second
+)
+
+const (
+	coverageAgencyIDsCacheKey = "coverage_agency_ids"
 )
 
 // ClientConfig holds configuration for the OneBusAway client
@@ -132,8 +142,10 @@ func (cb *CircuitBreaker) recordFailure() {
 // getDefaultConfig returns the default configuration with standard agency priorities
 func getDefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		AgencyPriority:  []string{"1", "40", "29", "95", "97", "98", "3", "23"},
-		DefaultAgencies: []string{"1", "40", "29", "95", "97", "98", "3", "23"},
+		// Include common Puget Sound agency IDs first (Metro, Sound Transit, Pierce Transit),
+		// then fall back to the broader default list.
+		AgencyPriority:  []string{"1", "40", "29", "2", "4", "5", "6", "7", "3", "9"},
+		DefaultAgencies: []string{"1", "40", "29", "2", "4", "5", "6", "7", "3", "9"},
 	}
 }
 
@@ -417,6 +429,131 @@ func (c *OneBusAwayClient) getAgencyList() []string {
 	return c.config.DefaultAgencies
 }
 
+// logAgencyIDsForSearch writes the agency ID list used for stop lookup (from cache or API).
+func logAgencyIDsForSearch(source string, ids []string) {
+	if len(ids) == 0 {
+		log.Printf("[OBA] agency search list (%s): <empty>", source)
+		return
+	}
+	log.Printf("[OBA] agency search list (%s, %d): %s", source, len(ids), strings.Join(ids, ", "))
+}
+
+// extractAgencyIDsFromCoverageList returns unique agency IDs from agencies-with-coverage data.list, preserving API order.
+func extractAgencyIDsFromCoverageList(list []models.AgencyCoverageRow) []string {
+	ids := make([]string, 0, len(list))
+	seen := make(map[string]struct{}, len(list))
+	for _, a := range list {
+		id := strings.TrimSpace(a.AgencyID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// ensureAgencyIDsForSearch refreshes the agency ID list used by FindAllMatchingStops.
+// It is cached for ~1 day and sourced from the OneBusAway agencies-with-coverage endpoint.
+func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
+	// 1) Fast path: valid cache
+	if cached, found := c.cache.Get(coverageAgencyIDsCacheKey); found {
+		if ids, ok := cached.([]string); ok && len(ids) > 0 {
+			c.config.AgencyPriority = ids
+			logAgencyIDsForSearch("cache hit (coverage_agency_ids)", ids)
+			return nil
+		}
+	}
+
+	// 2) Graceful degradation: expired cached data
+	if cachedData, found, _ := c.cache.GetExpired(coverageAgencyIDsCacheKey); found {
+		if ids, ok := cachedData.([]string); ok && len(ids) > 0 {
+			// Keep searching with stale-but-available IDs.
+			c.config.AgencyPriority = ids
+			logAgencyIDsForSearch("cache expired (stale coverage_agency_ids)", ids)
+			log.Printf("[OBA] agencies-with-coverage cache expired; continuing with stale agency IDs until refresh succeeds")
+			return nil
+		}
+	}
+
+	// 3) Fetch from API
+	endpoint := fmt.Sprintf("%s/api/where/agencies-with-coverage.json", c.BaseURL)
+
+	var coverageResp models.AgenciesWithCoverageResponse
+	startTime := time.Now()
+
+	err := c.circuitBreaker.Call(func() error {
+		req, err := http.NewRequest("GET", endpoint, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		// Add cache-control headers
+		req.Header.Set("Cache-Control", "max-age=3600")
+		req.Header.Set("User-Agent", "oba-twilio/1.0")
+
+		q := req.URL.Query()
+		q.Add("key", c.APIKey)
+		req.URL.RawQuery = q.Encode()
+
+		resp, err := c.Client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to make request: %w", err)
+		}
+
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("API returned status %d", resp.StatusCode)
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&coverageResp); err != nil {
+			return fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		return nil
+	})
+
+	responseTime := time.Since(startTime)
+
+	if err != nil {
+		c.metrics.IncrementAPIError()
+		if strings.Contains(err.Error(), "circuit breaker is open") {
+			c.metrics.IncrementCircuitBreakerOpen()
+		}
+		return err
+	}
+
+	c.metrics.IncrementAPICall(responseTime)
+
+	if coverageResp.Code != 200 {
+		return fmt.Errorf("API error: %s (code %d)", coverageResp.Text, coverageResp.Code)
+	}
+	if len(coverageResp.Data.List) == 0 {
+		return fmt.Errorf("no agencies-with-coverage agencies found")
+	}
+
+	// Extract unique agency IDs preserving API order.
+	ids := extractAgencyIDsFromCoverageList(coverageResp.Data.List)
+	if len(ids) == 0 {
+		return fmt.Errorf("agencies-with-coverage returned no valid agency IDs")
+	}
+
+	// Apply to search ordering.
+	c.config.AgencyPriority = ids
+
+	// Cache for ~1 day.
+	c.cache.Set(coverageAgencyIDsCacheKey, ids, agenciesCacheTTLMinutes*time.Minute)
+	logAgencyIDsForSearch("API agencies-with-coverage (ensureAgencyIDsForSearch)", ids)
+
+	return nil
+}
+
 // SetAgencyPriority allows runtime configuration of agency priority
 func (c *OneBusAwayClient) SetAgencyPriority(agencies []string) error {
 	if c.config == nil {
@@ -452,6 +589,9 @@ func (c *OneBusAwayClient) InitializeCoverage() error {
 		if coverageArea, ok := cached.(*models.CoverageArea); ok {
 			c.metrics.IncrementCacheHits()
 			c.coverageArea = coverageArea
+			// Even if coverage areas are cached, we still need to refresh
+			// agency IDs used for stop searching once per day.
+			_ = c.ensureAgencyIDsForSearch()
 			return nil
 		}
 	}
@@ -538,6 +678,16 @@ func (c *OneBusAwayClient) InitializeCoverage() error {
 		return fmt.Errorf("no coverage areas found")
 	}
 
+	// Apply agency IDs to stop searching and cache them for ~1 day.
+	// (This reuses the agencies-with-coverage response we already fetched.)
+	agencyIDs := extractAgencyIDsFromCoverageList(coverageResp.Data.List)
+
+	if len(agencyIDs) > 0 {
+		c.config.AgencyPriority = agencyIDs
+		c.cache.Set(coverageAgencyIDsCacheKey, agencyIDs, agenciesCacheTTLMinutes*time.Minute)
+		logAgencyIDsForSearch("InitializeCoverage (agencies-with-coverage response)", agencyIDs)
+	}
+
 	c.coverageArea = c.calculateCoverageArea(coverageResp.Data.List)
 
 	// Cache the result
@@ -550,13 +700,7 @@ func (c *OneBusAwayClient) GetCoverageArea() *models.CoverageArea {
 	return c.coverageArea
 }
 
-func (c *OneBusAwayClient) calculateCoverageArea(agencies []struct {
-	AgencyID string  `json:"agencyId"`
-	Lat      float64 `json:"lat"`
-	LatSpan  float64 `json:"latSpan"`
-	Lon      float64 `json:"lon"`
-	LonSpan  float64 `json:"lonSpan"`
-}) *models.CoverageArea {
+func (c *OneBusAwayClient) calculateCoverageArea(agencies []models.AgencyCoverageRow) *models.CoverageArea {
 	if len(agencies) == 0 {
 		return &models.CoverageArea{
 			CenterLat: 47.6062,
@@ -1318,7 +1462,11 @@ func (c *OneBusAwayClient) SearchStops(query string) ([]models.Stop, error) {
 	return stops, nil
 }
 
-func (c *OneBusAwayClient) ProcessArrivals(obaResp *models.OneBusAwayResponse) []models.Arrival {
+func (c *OneBusAwayClient) ProcessArrivals(obaResp *models.OneBusAwayResponse, maxMinutesOut int) []models.Arrival {
+	if maxMinutesOut <= 0 {
+		maxMinutesOut = 120
+	}
+
 	arrivals := make([]models.Arrival, 0)
 	now := time.Now().Unix() * 1000
 
@@ -1333,7 +1481,7 @@ func (c *OneBusAwayClient) ProcessArrivals(obaResp *models.OneBusAwayResponse) [
 		}
 
 		minutesUntil := int((arrivalTime - now) / (1000 * 60))
-		if minutesUntil > 60 {
+		if minutesUntil > maxMinutesOut {
 			continue
 		}
 
@@ -1348,6 +1496,17 @@ func (c *OneBusAwayClient) ProcessArrivals(obaResp *models.OneBusAwayResponse) [
 
 		arrivals = append(arrivals, arrival)
 	}
+
+	// Keep arrivals deterministic and user-friendly: nearest departures first.
+	sort.SliceStable(arrivals, func(i, j int) bool {
+		if arrivals[i].MinutesUntilArrival == arrivals[j].MinutesUntilArrival {
+			if arrivals[i].RouteShortName == arrivals[j].RouteShortName {
+				return arrivals[i].TripHeadsign < arrivals[j].TripHeadsign
+			}
+			return arrivals[i].RouteShortName < arrivals[j].RouteShortName
+		}
+		return arrivals[i].MinutesUntilArrival < arrivals[j].MinutesUntilArrival
+	})
 
 	return arrivals
 }

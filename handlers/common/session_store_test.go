@@ -133,9 +133,8 @@ func TestSessionStore_InvalidPhoneNumber(t *testing.T) {
 	invalidPhones := []string{
 		"invalid",
 		"1234567890",
-		"+1234567890",
-		"+15551234",     // too short
-		"+155512345678", // too long
+		"+1555123",          // too short (fewer than 8 digits after +)
+		"+1555123456789012", // too long (more than 15 digits after +)
 		"",
 	}
 
@@ -150,6 +149,27 @@ func TestSessionStore_InvalidPhoneNumber(t *testing.T) {
 		if store.GetDisambiguationSession(phone) != nil {
 			t.Errorf("Should not retrieve session for invalid phone: %s", phone)
 		}
+	}
+}
+
+func TestSessionStore_AcceptsNonUSPhoneNumberInE164(t *testing.T) {
+	store := NewSessionStore()
+	defer store.Close()
+
+	phoneNumber := "+48500100200"
+	session := &models.VoiceSession{
+		StopID:       "1_12345",
+		MinutesAfter: 30,
+	}
+
+	err := store.SetVoiceSession(phoneNumber, session)
+	if err != nil {
+		t.Fatalf("Failed to set voice session for E.164 phone number: %v", err)
+	}
+
+	retrieved := store.GetVoiceSession(phoneNumber)
+	if retrieved == nil {
+		t.Fatal("Failed to get voice session for E.164 phone number")
 	}
 }
 

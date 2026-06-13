@@ -36,8 +36,8 @@ func (m *MockOneBusAwayClientSMS) GetArrivalsAndDeparturesWithWindow(stopID stri
 	return args.Get(0).(*models.OneBusAwayResponse), args.Error(1)
 }
 
-func (m *MockOneBusAwayClientSMS) ProcessArrivals(resp *models.OneBusAwayResponse) []models.Arrival {
-	args := m.Called(resp)
+func (m *MockOneBusAwayClientSMS) ProcessArrivals(resp *models.OneBusAwayResponse, maxMinutes int) []models.Arrival {
+	args := m.Called(resp, maxMinutes)
 	if args.Get(0) == nil {
 		return nil
 	}
@@ -101,7 +101,7 @@ func createTestManagerWithSpanish() *localization.LocalizationManager {
 			"sms.help":                "Send a stop ID (e.g., 75403) to get bus arrivals. Reply 'more' for later buses, 'help' for this message.",
 			"sms.no_stops_found":      "Sorry, no stops found with ID %s. Please check and try again.",
 			"sms.no_arrivals":         "No upcoming arrivals found for this stop.",
-			"sms.service_unavailable": "OneBusAway service is temporarily unavailable. Please try again.",
+			"sms.service_unavailable": "{brand} service is temporarily unavailable. Please try again.",
 			"sms.menu.more_hint":      "Reply 'more' for later buses",
 			"sms.menu.help_hint":      "Reply 'help' for usage info",
 			"sms.menu.new_hint":       "Reply 'new' for a different stop",
@@ -111,12 +111,13 @@ func createTestManagerWithSpanish() *localization.LocalizationManager {
 			"sms.session.expired":     "Session expired. Please send a stop ID to get started.",
 			"sms.language.switched":   "Language switched to English",
 			"sms.error.search_failed": "Sorry, I couldn't search for stop %s. Please check the stop ID and try again.",
+			"sms.more.no_additional":  "No additional buses in this time range. Try 'more' again later or send a new stop ID.",
 		},
 		"es-US": {
 			"sms.help":                "Envíe un ID de parada (ej. 75403) para obtener llegadas. Responda 'more' para autobuses posteriores, 'help' para este mensaje.",
 			"sms.no_stops_found":      "Lo siento, no se encontraron paradas con ID %s. Por favor verifique e inténtelo de nuevo.",
 			"sms.no_arrivals":         "No se encontraron próximas llegadas para esta parada.",
-			"sms.service_unavailable": "El servicio OneBusAway no está disponible temporalmente. Por favor inténtelo de nuevo.",
+			"sms.service_unavailable": "El servicio {brand} no está disponible temporalmente. Por favor inténtelo de nuevo.",
 			"sms.menu.more_hint":      "Responda 'more' para autobuses posteriores",
 			"sms.menu.help_hint":      "Responda 'help' para información de uso",
 			"sms.menu.new_hint":       "Responda 'new' para una parada diferente",
@@ -126,6 +127,7 @@ func createTestManagerWithSpanish() *localization.LocalizationManager {
 			"sms.session.expired":     "Sesión expirada. Por favor envíe un ID de parada para comenzar.",
 			"sms.language.switched":   "Idioma cambiado a Español",
 			"sms.error.search_failed": "Lo siento, no pude buscar la parada %s. Por favor verifique el ID de la parada e inténtelo de nuevo.",
+			"sms.more.no_additional":  "No hay más autobuses en este rango. Pruebe 'more' más tarde o envíe un nuevo ID de parada.",
 		},
 	}
 
@@ -178,6 +180,17 @@ func createMockArrivals() []models.Arrival {
 	}
 }
 
+// Arrivals in the "more" slice (beyond the first 30-minute horizon shown initially).
+func createMockArrivalsLaterChunk() []models.Arrival {
+	return []models.Arrival{
+		{
+			RouteShortName:      "99",
+			TripHeadsign:        "Later Terminal",
+			MinutesUntilArrival: 42,
+		},
+	}
+}
+
 func sendSMSRequest(r *gin.Engine, from, body string) *httptest.ResponseRecorder {
 	form := url.Values{}
 	form.Set("From", from)
@@ -208,14 +221,14 @@ func TestSMSHandler_BasicStopQuery(t *testing.T) {
 	mockArrivals := createMockArrivals()
 
 	mockClient.On("FindAllMatchingStops", "75403").Return(mockStopOptions, nil)
-	mockClient.On("GetArrivalsAndDepartures", "1_75403").Return(mockResponse, nil)
-	mockClient.On("ProcessArrivals", mockResponse).Return(mockArrivals)
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 30).Return(mockResponse, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 30).Return(mockArrivals)
 
 	w := sendSMSRequest(r, "+12345678901", "75403")
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	body := w.Body.String()
-	assert.Contains(t, body, "King County Metro: Pine St &amp; 3rd Ave")
+	assert.Contains(t, body, "Stop: Pine St &amp; 3rd Ave")
 	assert.Contains(t, body, "Route 8")
 	assert.Contains(t, body, "Downtown")
 	assert.Contains(t, body, "Reply &#39;more&#39; for later buses")
@@ -249,7 +262,8 @@ func TestSMSHandler_EmptyBody(t *testing.T) {
 func TestSMSHandler_InvalidStopID(t *testing.T) {
 	r, _, _ := setupSMSTestRouter()
 
-	w := sendSMSRequest(r, "+12345678901", "abc123")
+	// Use a string that fails ValidateStopID (invalid character '@')
+	w := sendSMSRequest(r, "+12345678901", "abc@123")
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	body := w.Body.String()
@@ -311,11 +325,14 @@ func TestSMSHandler_MoreKeyword_WithSession(t *testing.T) {
 
 	// Initial query
 	mockClient.On("FindAllMatchingStops", "75403").Return(mockStopOptions, nil)
-	mockClient.On("GetArrivalsAndDepartures", "1_75403").Return(mockResponse, nil)
-	mockClient.On("ProcessArrivals", mockResponse).Return(mockArrivals)
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 30).Return(mockResponse, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 30).Return(mockArrivals)
 
 	// "more" query with extended window
 	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 60).Return(mockResponse, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 60).Return(append(createMockArrivals(), createMockArrivalsLaterChunk()...))
+	// "more" flow calls GetStopInfo to obtain the stop name header
+	mockClient.On("GetStopInfo", "1_75403").Return(&models.StopOption{FullStopID: "1_75403", StopName: "Pine St & 3rd Ave"}, nil)
 
 	// First request to establish session
 	w1 := sendSMSRequest(r, "+12345678901", "75403")
@@ -325,6 +342,8 @@ func TestSMSHandler_MoreKeyword_WithSession(t *testing.T) {
 	w2 := sendSMSRequest(r, "+12345678901", "more")
 	assert.Equal(t, http.StatusOK, w2.Code)
 	body := w2.Body.String()
+	assert.Contains(t, body, "Route 99")
+	assert.Contains(t, body, "Later Terminal")
 	assert.Contains(t, body, "Reply &#39;more&#39; for later buses")
 
 	// Verify session was updated
@@ -352,8 +371,8 @@ func TestSMSHandler_NewKeyword(t *testing.T) {
 	mockArrivals := createMockArrivals()
 
 	mockClient.On("FindAllMatchingStops", "75403").Return(mockStopOptions, nil)
-	mockClient.On("GetArrivalsAndDepartures", "1_75403").Return(mockResponse, nil)
-	mockClient.On("ProcessArrivals", mockResponse).Return(mockArrivals)
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 30).Return(mockResponse, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 30).Return(mockArrivals)
 
 	// First request to establish session
 	w1 := sendSMSRequest(r, "+12345678901", "75403")
@@ -377,13 +396,18 @@ func TestSMSHandler_NewKeyword(t *testing.T) {
 }
 
 func TestSMSHandler_InvalidKeyword(t *testing.T) {
-	r, _, _ := setupSMSTestRouter()
+	r, mockClient, _ := setupSMSTestRouter()
+
+	// With relaxed stop ID parsing, an unrecognized keyword falls back to stop lookup.
+	// Mock the lookup to return no stops.
+	mockClient.On("FindAllMatchingStops", "invalid").Return([]models.StopOption{}, nil)
 
 	w := sendSMSRequest(r, "+12345678901", "invalid")
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	body := w.Body.String()
-	assert.Contains(t, body, "Please send a valid stop ID")
+	assert.Contains(t, body, "Sorry, no stops found with ID invalid")
+	mockClient.AssertExpectations(t)
 }
 
 // Time Parsing Tests
@@ -402,8 +426,9 @@ func TestSMSHandler_TimeQuery_PlusMinutes(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test "+30" format (uses default method since window is 30)
-	mockClient.On("GetArrivalsAndDepartures", "1_75403").Return(createMockResponse("1_75403"), nil)
-	mockClient.On("ProcessArrivals", mock.Anything).Return(createMockArrivals())
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 30).Return(createMockResponse("1_75403"), nil)
+	mockClient.On("ProcessArrivals", mock.Anything, mock.Anything).Return(createMockArrivals())
+	mockClient.On("GetStopInfo", "1_75403").Return(&models.StopOption{FullStopID: "1_75403", StopName: "Pine St & 3rd Ave"}, nil)
 
 	w := sendSMSRequest(r, "+12345678901", "+30")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -431,7 +456,8 @@ func TestSMSHandler_TimeQuery_PlusHours(t *testing.T) {
 
 	// Test "+1h" format
 	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 60).Return(createMockResponse("1_75403"), nil)
-	mockClient.On("ProcessArrivals", mock.Anything).Return(createMockArrivals())
+	mockClient.On("ProcessArrivals", mock.Anything, mock.Anything).Return(createMockArrivals())
+	mockClient.On("GetStopInfo", "1_75403").Return(&models.StopOption{FullStopID: "1_75403", StopName: "Pine St & 3rd Ave"}, nil)
 
 	w := sendSMSRequest(r, "+12345678901", "+1h")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -459,7 +485,8 @@ func TestSMSHandler_TimeQuery_NextHour(t *testing.T) {
 
 	// Test "next hour" format
 	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 60).Return(createMockResponse("1_75403"), nil)
-	mockClient.On("ProcessArrivals", mock.Anything).Return(createMockArrivals())
+	mockClient.On("ProcessArrivals", mock.Anything, mock.Anything).Return(createMockArrivals())
+	mockClient.On("GetStopInfo", "1_75403").Return(&models.StopOption{FullStopID: "1_75403", StopName: "Pine St & 3rd Ave"}, nil)
 
 	w := sendSMSRequest(r, "+12345678901", "next hour")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -487,7 +514,8 @@ func TestSMSHandler_TimeQuery_NextTwoHours(t *testing.T) {
 
 	// Test "next 2 hours" format
 	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 120).Return(createMockResponse("1_75403"), nil)
-	mockClient.On("ProcessArrivals", mock.Anything).Return(createMockArrivals())
+	mockClient.On("ProcessArrivals", mock.Anything, mock.Anything).Return(createMockArrivals())
+	mockClient.On("GetStopInfo", "1_75403").Return(&models.StopOption{FullStopID: "1_75403", StopName: "Pine St & 3rd Ave"}, nil)
 
 	w := sendSMSRequest(r, "+12345678901", "next 2 hours")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -601,7 +629,7 @@ func TestSMSHandler_WindowProgression(t *testing.T) {
 
 	for i, expectedWindow := range expectedWindows {
 		mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", expectedWindow).Return(createMockResponse("1_75403"), nil)
-		mockClient.On("ProcessArrivals", mock.Anything).Return(createMockArrivals())
+		mockClient.On("ProcessArrivals", mock.Anything, mock.Anything).Return(createMockArrivals())
 
 		w := sendSMSRequest(r, "+12345678901", "more")
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -629,8 +657,13 @@ func setupSessionForTimeTests(r *gin.Engine, mockClient *MockOneBusAwayClientSMS
 	mockArrivals := createMockArrivals()
 
 	mockClient.On("FindAllMatchingStops", "75403").Return(mockStopOptions, nil)
-	mockClient.On("GetArrivalsAndDepartures", "1_75403").Return(mockResponse, nil)
-	mockClient.On("ProcessArrivals", mockResponse).Return(mockArrivals)
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 30).Return(mockResponse, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 30).Return(mockArrivals)
+	// "more" flow (and time-window progression) calls GetStopInfo to render the stop name header.
+	mockClient.On("GetStopInfo", "1_75403").Return(&models.StopOption{
+		FullStopID: "1_75403",
+		StopName:   "Test Stop",
+	}, nil)
 
 	// Create initial session
 	sendSMSRequest(r, "+12345678901", "75403")

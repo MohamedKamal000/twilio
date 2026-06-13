@@ -19,19 +19,26 @@ func NewTestManager() *LocalizationManager {
 	return &LocalizationManager{
 		strings: map[string]map[string]string{
 			"en-US": {
-				"voice.welcome":                   "Welcome to OneBusAway transit information. Please enter your stop ID followed by the pound key.",
+				// Generic keys used by health checks
+				"welcome": "Welcome",
+				"error":   "An error occurred",
+				"help":    "Help information",
+				"goodbye": "Goodbye",
+
+				// Voice prompts
+				"voice.welcome":                   "Welcome to {brand} transit information. Please enter your stop ID followed by the pound key.",
 				"voice.timeout":                   "Sorry, I didn't hear anything. Please call back and try again.",
 				"voice.error.invalid_request":     "Invalid request format.",
 				"voice.error.no_stops_found":      "Sorry, I couldn't find any stops with that ID. Please check the stop ID and try again.",
 				"voice.error.template_failed":     "Error generating response.",
-				"voice.error.service_unavailable": "OneBusAway service is temporarily unavailable. Please try again in a moment.",
+				"voice.error.service_unavailable": "{brand} service is temporarily unavailable. Please try again in a moment.",
 				"voice.menu.more_departures":      "To hear more departures, press 1.",
 				"voice.menu.main_menu":            "To go back to the main menu, press 2.",
 				"voice.language.spanish_option":   "Para continuar en Español, presione asterisco.",
 				"voice.language.choose_language":  "To choose another language, press asterisk.",
 				"sms.no_stops_found":              "Sorry, no stops found with ID %s. Please check and try again.",
 				"sms.no_arrivals":                 "No upcoming arrivals found for this stop.",
-				"sms.service_unavailable":         "OneBusAway service is temporarily unavailable. Please try again.",
+				"sms.service_unavailable":         "{brand} service is temporarily unavailable. Please try again.",
 				"sms.error.invalid_choice":        "Please choose a number between 1 and %d.",
 				"voice.error.invalid_stop_id":     "Invalid stop ID. Please try calling again with a valid stop ID.",
 				"voice.error.invalid_choice":      "Please press a number between 1 and %d.",

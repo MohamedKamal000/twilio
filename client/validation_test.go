@@ -161,22 +161,10 @@ func TestInitializeCoverage_InvalidCoordinates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockResponse := models.AgenciesWithCoverageResponse{
 				Data: struct {
-					LimitExceeded bool `json:"limitExceeded"`
-					List          []struct {
-						AgencyID string  `json:"agencyId"`
-						Lat      float64 `json:"lat"`
-						LatSpan  float64 `json:"latSpan"`
-						Lon      float64 `json:"lon"`
-						LonSpan  float64 `json:"lonSpan"`
-					} `json:"list"`
+					LimitExceeded bool                       `json:"limitExceeded"`
+					List          []models.AgencyCoverageRow `json:"list"`
 				}{
-					List: []struct {
-						AgencyID string  `json:"agencyId"`
-						Lat      float64 `json:"lat"`
-						LatSpan  float64 `json:"latSpan"`
-						Lon      float64 `json:"lon"`
-						LonSpan  float64 `json:"lonSpan"`
-					}{
+					List: []models.AgencyCoverageRow{
 						{
 							AgencyID: "test",
 							Lat:      tt.lat,

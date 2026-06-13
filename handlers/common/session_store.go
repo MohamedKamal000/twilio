@@ -20,7 +20,8 @@ const (
 	lruCleanupBatchSize      = 100 // Clean up this many LRU entries at once when limit exceeded
 )
 
-var phoneRegex = regexp.MustCompile(`^\+1\d{10}$`)
+// Accept E.164 numbers used by Twilio (e.g. +14445556666, +48500100200).
+var phoneRegex = regexp.MustCompile(`^\+[1-9]\d{7,14}$`)
 
 // SessionMetrics provides insights into session store performance
 type SessionMetrics struct {
@@ -202,7 +203,7 @@ func (s *ImprovedSessionStore) calculateChecksum(phoneNumber string, data interf
 	case *models.VoiceSession:
 		_, _ = fmt.Fprintf(hasher, "voice_%s_%d", v.StopID, v.MinutesAfter)
 	case *models.SMSSession:
-		_, _ = fmt.Fprintf(hasher, "sms_%s_%s_%d", v.LastStopID, v.Language, v.WindowMinutes)
+		_, _ = fmt.Fprintf(hasher, "sms_%s_%s_%d_%d", v.LastStopID, v.Language, v.WindowMinutes, v.ArrivalHorizonShownMinutes)
 	}
 
 	return sha256.Sum256(hasher.Sum(nil))

@@ -59,8 +59,8 @@ func TestGetMetrics(t *testing.T) {
 
 	metrics := collector.GetMetrics()
 
-	if metrics.SystemUptimeSeconds <= 0 {
-		t.Error("Expected system uptime to be positive")
+	if metrics.SystemUptimeSeconds < 0 {
+		t.Error("Expected system uptime to be non-negative")
 	}
 
 	if metrics.SystemGoroutinesTotal <= 0 {

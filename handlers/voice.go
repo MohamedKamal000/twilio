@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"oba-twilio/client"
+	"oba-twilio/handlers/common"
 	"oba-twilio/handlers/voice"
 	"oba-twilio/localization"
 	"oba-twilio/middleware"
@@ -28,6 +29,12 @@ func (h *VoiceHandler) Close() {
 func (h *VoiceHandler) SetAnalytics(analyticsManager middleware.AnalyticsManager, hashSalt string) {
 	if h.Handler != nil {
 		h.Handler.SetAnalytics(analyticsManager, hashSalt)
+	}
+}
+
+func (h *VoiceHandler) SetArrivalFilterConfig(cfg common.ArrivalFilterConfig) {
+	if h.Handler != nil {
+		h.Handler.SetArrivalFilterConfig(cfg)
 	}
 }
 

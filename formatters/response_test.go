@@ -11,6 +11,7 @@ import (
 )
 
 func TestFormatSMSResponse(t *testing.T) {
+	lm := localization.NewTestManager()
 	arrivals := []models.Arrival{
 		{
 			RouteShortName:      "8",
@@ -34,7 +35,7 @@ func TestFormatSMSResponse(t *testing.T) {
 		},
 	}
 
-	result := FormatSMSResponse(arrivals, "Pine St & 3rd Ave")
+	result := FormatSMSResponse(arrivals, "Pine St & 3rd Ave", lm, "en-US")
 
 	assert.Contains(t, result, "Pine St & 3rd Ave")
 	assert.Contains(t, result, "Route 8 to Seattle Center: 3 min")
@@ -47,8 +48,80 @@ func TestFormatSMSResponse(t *testing.T) {
 }
 
 func TestFormatSMSResponse_Empty(t *testing.T) {
-	result := FormatSMSResponse([]models.Arrival{}, "Test Stop")
+	lm := localization.NewTestManager()
+	result := FormatSMSResponse([]models.Arrival{}, "Test Stop", lm, "en-US")
 	assert.Equal(t, "No upcoming arrivals found for this stop.", result)
+}
+
+func TestFormatSMSResponse_PolishLocalization(t *testing.T) {
+	lm := localization.NewTestManagerWithStrings(
+		map[string]map[string]string{
+			"pl-PL": {
+				"sms.arrival.stop_label": "Przystanek",
+				"sms.arrival.route_to":   "Linia %s do %s: %s",
+			},
+		},
+		[]string{"pl-PL"},
+	)
+	arrivals := []models.Arrival{
+		{
+			RouteShortName:      "1",
+			TripHeadsign:        "Franowo",
+			MinutesUntilArrival: 2,
+		},
+	}
+
+	result := FormatSMSResponse(arrivals, "Franowo", lm, "pl-PL")
+	assert.Contains(t, result, "Przystanek: Franowo")
+	assert.Contains(t, result, "Linia 1 do Franowo: 2 min")
+}
+
+func TestFormatSMSResponse_LocalizesNow(t *testing.T) {
+	lm := localization.NewTestManagerWithStrings(
+		map[string]map[string]string{
+			"pl-PL": {
+				"sms.arrival.stop_label": "Przystanek",
+				"sms.arrival.route_to":   "Linia %s do %s: %s",
+				"voice.time.now":         "Teraz",
+			},
+		},
+		[]string{"pl-PL"},
+	)
+	arrivals := []models.Arrival{
+		{
+			RouteShortName:      "8",
+			TripHeadsign:        "Ogrody",
+			MinutesUntilArrival: 0,
+		},
+	}
+
+	result := FormatSMSResponse(arrivals, "Rondo", lm, "pl-PL")
+	assert.Contains(t, result, "Linia 8 do Ogrody: Teraz")
+	assert.NotContains(t, result, "Now")
+}
+
+func TestFormatSMSResponse_LocalizesMinutes(t *testing.T) {
+	lm := localization.NewTestManagerWithStrings(
+		map[string]map[string]string{
+			"xx-XX": {
+				"sms.arrival.stop_label": "StopX",
+				"sms.arrival.route_to":   "R %s -> %s: %s",
+				"voice.time.minute":      "ONE_MIN",
+				"voice.time.minutes":     "%d_MINS",
+			},
+		},
+		[]string{"xx-XX"},
+	)
+	arrivals := []models.Arrival{
+		{RouteShortName: "1", TripHeadsign: "A", MinutesUntilArrival: 1},
+		{RouteShortName: "2", TripHeadsign: "B", MinutesUntilArrival: 7},
+	}
+
+	result := FormatSMSResponse(arrivals, "S", lm, "xx-XX")
+	assert.Contains(t, result, "R 1 -> A: ONE_MIN")
+	assert.Contains(t, result, "R 2 -> B: 7_MINS")
+	assert.NotContains(t, result, "1 min")
+	assert.NotContains(t, result, "7 min")
 }
 
 func TestFormatVoiceResponse(t *testing.T) {
@@ -158,14 +231,11 @@ func TestExtractStopID(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"Valid stop ID", "75403", "75403"},
+		{"Valid numeric ID", "75403", "75403"},
 		{"Valid with spaces", " 75403 ", "75403"},
-		{"Valid short ID", "123", "123"},
-		{"Valid long ID", "1234567890", "1234567890"},
-		{"Invalid too short", "12", ""},
-		{"Invalid too long", "12345678901", ""},
-		{"Invalid with letters", "75403a", ""},
-		{"Invalid with text", "stop 75403", ""},
+		{"Valid alphanumeric ID", "sw44", "sw44"},
+		{"Valid single-character ID", "A", "A"},
+		{"Valid first token from text", "sw44 other text", "sw44"},
 		{"Empty string", "", ""},
 		{"Only spaces", "   ", ""},
 	}

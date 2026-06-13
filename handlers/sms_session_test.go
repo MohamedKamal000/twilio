@@ -25,6 +25,7 @@ func TestSMSHandler_AlwaysSendsResponse(t *testing.T) {
 		{
 			FullStopID:  "1_75403",
 			DisplayText: "15th Ave NE & NE Campus Pkwy",
+			StopName:    "15th Ave NE & NE Campus Pkwy",
 			AgencyName:  "Metro Transit",
 		},
 	}, nil)
@@ -58,8 +59,14 @@ func TestSMSHandler_AlwaysSendsResponse(t *testing.T) {
 		},
 	}
 
-	mockClient.On("GetArrivalsAndDepartures", "1_75403").Return(mockResponse, nil)
-	mockClient.On("ProcessArrivals", mockResponse).Return([]models.Arrival{
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 30).Return(mockResponse, nil)
+
+	// "more" flow calls GetStopInfo to obtain the stop name header.
+	mockClient.On("GetStopInfo", "1_75403").Return(&models.StopOption{
+		FullStopID: "1_75403",
+		StopName:   "15th Ave NE & NE Campus Pkwy",
+	}, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 30).Return([]models.Arrival{
 		{
 			RouteShortName:      "71",
 			TripHeadsign:        "Downtown Seattle",
@@ -114,6 +121,9 @@ func TestSMSHandler_AlwaysSendsResponse(t *testing.T) {
 
 		// Now test "more" command
 		mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_75403", 60).Return(mockResponse, nil)
+		mockClient.On("ProcessArrivals", mockResponse, 60).Return([]models.Arrival{
+			{RouteShortName: "77", TripHeadsign: "Later", MinutesUntilArrival: 45},
+		})
 
 		form2 := url.Values{}
 		form2.Add("From", "+12065551234")

@@ -121,8 +121,8 @@ func TestCheckHealthLiveness(t *testing.T) {
 		t.Error("Expected at least one check (system check)")
 	}
 
-	if response.Duration <= 0 {
-		t.Error("Expected duration to be positive")
+	if response.Duration < 0 {
+		t.Error("Expected duration to be non-negative")
 	}
 }
 

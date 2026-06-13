@@ -20,7 +20,7 @@ func TestNewManager(t *testing.T) {
 
 	// Create test locale file
 	enUSContent := `{
-		"voice.welcome": "Welcome to OneBusAway",
+		"voice.welcome": "Welcome to {brand}",
 		"sms.no_stops_found": "No stops found with ID %s"
 	}`
 
@@ -50,6 +50,9 @@ func TestNewManager(t *testing.T) {
 	// Test fallback for missing key
 	missing := manager.GetString("missing.key", "en-US")
 	assert.Equal(t, "missing.key", missing)
+
+	manager.SetBrandDisplayName("Acme Transit")
+	assert.Equal(t, "Welcome to Acme Transit", manager.GetString("voice.welcome", "en-US"))
 }
 
 func TestManagerMultipleLanguages(t *testing.T) {
@@ -62,8 +65,8 @@ func TestManagerMultipleLanguages(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create test locale files
-	enUSContent := `{"voice.welcome": "Welcome to OneBusAway"}`
-	esUSContent := `{"voice.welcome": "Bienvenido a OneBusAway"}`
+	enUSContent := `{"voice.welcome": "Welcome to {brand}"}`
+	esUSContent := `{"voice.welcome": "Bienvenido a {brand}"}`
 
 	err = os.WriteFile(filepath.Join(localesDir, "en-US.json"), []byte(enUSContent), 0644)
 	require.NoError(t, err)

@@ -20,6 +20,8 @@ import (
 	"oba-twilio/validation"
 )
 
+const smsPageSize = 3
+
 // Pre-compiled regex patterns for performance
 var (
 	timeRegex     = regexp.MustCompile(`^\+(\d+)$`)
@@ -32,6 +34,7 @@ type SMSHandler struct {
 	SessionStore        *common.SessionStore
 	LocalizationManager *localization.LocalizationManager
 	ErrorHandler        *common.ErrorHandler
+	arrivalFilterConfig common.ArrivalFilterConfig
 	analyticsManager    middleware.AnalyticsManager
 	analyticsHashSalt   string
 }
@@ -42,7 +45,16 @@ func NewSMSHandler(obaClient client.OneBusAwayClientInterface, locManager *local
 		SessionStore:        common.NewSessionStore(),
 		LocalizationManager: locManager,
 		ErrorHandler:        common.NewErrorHandler(locManager),
+		arrivalFilterConfig: common.ArrivalFilterConfig{
+			Enabled:               false,
+			MaxPredictedEarlyMins: 15,
+			FallbackToUnfiltered:  true,
+		},
 	}
+}
+
+func (h *SMSHandler) SetArrivalFilterConfig(cfg common.ArrivalFilterConfig) {
+	h.arrivalFilterConfig = cfg
 }
 
 func (h *SMSHandler) Close() {
@@ -90,9 +102,10 @@ func (h *SMSHandler) HandleSMS(c *gin.Context) {
 		return
 	}
 
-	// Check if user is responding to a disambiguation request
+	// Check if user is responding to a disambiguation request.
+	// Treat short numeric messages (e.g. "1") as a choice only when there is an active
+	// disambiguation session for this sender and the choice is within the valid range.
 	if choice := formatters.IsDisambiguationChoice(req.Body); choice > 0 {
-		// Additional validation for the choice
 		session := h.SessionStore.GetDisambiguationSession(req.From)
 		if session != nil {
 			if err := validation.ValidateDisambiguationChoice(req.Body, len(session.StopOptions)); err != nil {
@@ -102,9 +115,10 @@ func (h *SMSHandler) HandleSMS(c *gin.Context) {
 				c.String(http.StatusOK, twiml)
 				return
 			}
+			h.handleDisambiguationChoice(c, req, choice)
+			return
 		}
-		h.handleDisambiguationChoice(c, req, choice)
-		return
+		// No active session: fall through and treat as a stop query.
 	}
 
 	// Clear any existing disambiguation session for new queries
@@ -122,6 +136,7 @@ func (h *SMSHandler) HandleSMS(c *gin.Context) {
 	// Update SMS session with current language and stop
 	smsSession.Language = language
 	smsSession.LastStopID = stopID
+	smsSession.ArrivalHorizonShownMinutes = 0 // new stop query — show nearest slice from scratch
 	smsSession.LastQueryTime = time.Now().Unix()
 	if err := h.SessionStore.SetSMSSession(req.From, smsSession); err != nil {
 		log.Printf("Failed to set SMS session for %s: %v", req.From, err)
@@ -183,7 +198,8 @@ func (h *SMSHandler) HandleSMS(c *gin.Context) {
 	}
 
 	// Single stop found, get arrivals directly
-	h.getAndFormatArrivalsWithStopNameAndSession(c, req.From, matchingStops[0].FullStopID, matchingStops[0].DisplayText, smsSession)
+	// For SMS "Stop:" header we want the stop name (not "Agency: Stop").
+	h.getAndFormatArrivalsWithStopNameAndSession(c, req.From, matchingStops[0].FullStopID, matchingStops[0].StopName, smsSession)
 }
 
 func (h *SMSHandler) handleDisambiguationChoice(c *gin.Context, req models.TwilioSMSRequest, choice int) {
@@ -214,7 +230,9 @@ func (h *SMSHandler) handleDisambiguationChoice(c *gin.Context, req models.Twili
 	// Get SMS session for this user to maintain consistency
 	smsSession := h.getOrCreateSMSSession(req.From)
 	smsSession.LastStopID = selectedStop.FullStopID
-	h.getAndFormatArrivalsWithStopNameAndSession(c, req.From, selectedStop.FullStopID, selectedStop.DisplayText, smsSession)
+	smsSession.ArrivalHorizonShownMinutes = 0
+	// For SMS "Stop:" header we want the stop name (not "Agency: Stop").
+	h.getAndFormatArrivalsWithStopNameAndSession(c, req.From, selectedStop.FullStopID, selectedStop.StopName, smsSession)
 }
 
 func (h *SMSHandler) getAndFormatArrivalsWithStopNameAndSession(c *gin.Context, phoneNumber string, fullStopID string, stopDisplayName string, session *models.SMSSession) {
@@ -227,25 +245,63 @@ func (h *SMSHandler) getAndFormatArrivalsWithStopNameAndSession(c *gin.Context, 
 		window = 30
 	}
 
-	// Get arrivals with specified window (use default method if window is 30)
-	if window == 30 {
-		obaResp, err = h.OBAClient.GetArrivalsAndDepartures(fullStopID)
-	} else {
-		obaResp, err = h.OBAClient.GetArrivalsAndDeparturesWithWindow(fullStopID, window)
-	}
+	obaResp, err = h.OBAClient.GetArrivalsAndDeparturesWithWindow(fullStopID, window)
 	if err != nil {
 		h.ErrorHandler.HandleSMSError(c, err, session.Language)
 		return
 	}
 
-	arrivals := h.OBAClient.ProcessArrivals(obaResp)
+	arrivalsAll := h.OBAClient.ProcessArrivals(obaResp, window)
+	filteredArrivals, excluded, fallbackUsed := common.FilterArrivals(arrivalsAll, h.arrivalFilterConfig)
+	arrivalsAll = filteredArrivals
 
-	// Use stop name from response if display name is empty
-	if stopDisplayName == "" && obaResp.Data.Entry.StopId != "" {
-		stopDisplayName = obaResp.Data.Entry.StopId // This should be improved to get actual stop name
+	// Use paged continuation for SMS: "more" returns the next chunk, not an arbitrary time jump.
+	// ArrivalHorizonShownMinutes stores how many arrivals were already shown in this session.
+	offset := session.ArrivalHorizonShownMinutes
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(arrivalsAll) {
+		offset = len(arrivalsAll)
 	}
 
-	message := formatters.FormatSMSResponse(arrivals, stopDisplayName)
+	arrivals := arrivalsAll[offset:]
+	if len(arrivals) > smsPageSize {
+		arrivals = arrivals[:smsPageSize]
+	}
+	log.Printf(
+		"SMS pagination for %s: stop=%s window=%d total_arrivals=%d excluded=%d fallback=%t offset=%d page_size=%d returned=%d",
+		phoneNumber,
+		fullStopID,
+		window,
+		len(arrivalsAll),
+		excluded,
+		fallbackUsed,
+		offset,
+		smsPageSize,
+		len(arrivals),
+	)
+
+	// If we don't have a display name yet, try fetching stop info to obtain the stop name.
+	if stopDisplayName == "" {
+		if stopInfo, err := h.OBAClient.GetStopInfo(fullStopID); err == nil && stopInfo != nil && stopInfo.StopName != "" {
+			stopDisplayName = stopInfo.StopName
+		} else if obaResp.Data.Entry.StopId != "" {
+			// Last resort: fall back to stop ID (works even if name can't be resolved).
+			stopDisplayName = obaResp.Data.Entry.StopId
+		}
+	}
+
+	var message string
+	if len(arrivals) == 0 {
+		if offset > 0 {
+			message = h.LocalizationManager.GetString("sms.more.no_additional", session.Language)
+		} else {
+			message = formatters.FormatSMSResponse(arrivals, stopDisplayName, h.LocalizationManager, session.Language)
+		}
+	} else {
+		message = formatters.FormatSMSResponse(arrivals, stopDisplayName, h.LocalizationManager, session.Language)
+	}
 
 	// Add menu hints if there are arrivals
 	if len(arrivals) > 0 {
@@ -265,6 +321,7 @@ func (h *SMSHandler) getAndFormatArrivalsWithStopNameAndSession(c *gin.Context, 
 	newSession := *session
 	newSession.LastStopID = fullStopID
 	newSession.LastQueryTime = time.Now().Unix()
+	newSession.ArrivalHorizonShownMinutes = offset + len(arrivals)
 	if err := h.SessionStore.SetSMSSession(phoneNumber, &newSession); err != nil {
 		// Log error but still send the response
 		log.Printf("Failed to set SMS session for %s: %v", phoneNumber, err)
@@ -372,6 +429,7 @@ func (h *SMSHandler) handleLanguageSwitching(c *gin.Context, req models.TwilioSM
 		"french":   "fr-US",
 		"deutsch":  "de-US",
 		"german":   "de-US",
+		"polish":   "pl-PL",
 	}
 
 	if newLang, found := languageMap[message]; found && h.LocalizationManager.IsSupported(newLang) {
@@ -422,6 +480,7 @@ func (h *SMSHandler) handleTimeQuery(c *gin.Context, req models.TwilioSMSRequest
 		// Update session atomically
 		updatedSession := *session
 		updatedSession.WindowMinutes = newWindow
+		updatedSession.ArrivalHorizonShownMinutes = 0 // explicit window change — full slice for that window
 		updatedSession.LastQueryTime = time.Now().Unix()
 		if err := h.SessionStore.SetSMSSession(req.From, &updatedSession); err != nil {
 			// Log error but continue to send response

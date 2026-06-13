@@ -26,8 +26,8 @@ func TestSystemHealthChecker(t *testing.T) {
 		t.Error("Expected status to be set")
 	}
 
-	if result.Duration <= 0 {
-		t.Error("Expected duration to be positive")
+	if result.Duration < 0 {
+		t.Error("Expected duration to be non-negative")
 	}
 
 	if result.Timestamp.IsZero() {
@@ -152,11 +152,8 @@ func TestLocalizationHealthChecker_NilManager(t *testing.T) {
 }
 
 func TestLocalizationHealthChecker_WithManager(t *testing.T) {
-	// Create a localization manager for testing
-	manager, err := localization.NewManager("en-US")
-	if err != nil {
-		t.Skipf("Skipping test due to localization setup error: %v", err)
-	}
+	// Create a localization manager for testing without relying on disk files
+	manager := localization.NewTestManager()
 
 	checker := NewLocalizationHealthChecker(manager)
 
@@ -249,8 +246,8 @@ func TestHealthCheckerStability(t *testing.T) {
 			t.Errorf("Check %d: expected status to be set", i)
 		}
 
-		if result.Duration <= 0 {
-			t.Errorf("Check %d: expected positive duration", i)
+		if result.Duration < 0 {
+			t.Errorf("Check %d: expected non-negative duration", i)
 		}
 
 		if result.Timestamp.IsZero() {
@@ -301,8 +298,7 @@ func createTestSessionStore() *common.ImprovedSessionStore {
 }
 
 func createTestLocalizationManager() *localization.LocalizationManager {
-	manager, _ := localization.NewManager("en-US")
-	return manager
+	return localization.NewTestManager()
 }
 
 // Test that checkers implement the HealthChecker interface

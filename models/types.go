@@ -74,16 +74,19 @@ type StopData struct {
 	Text string `json:"text"`
 }
 
+// AgencyCoverageRow is one agency entry from agencies-with-coverage.json data.list.
+type AgencyCoverageRow struct {
+	AgencyID string  `json:"agencyId"`
+	Lat      float64 `json:"lat"`
+	LatSpan  float64 `json:"latSpan"`
+	Lon      float64 `json:"lon"`
+	LonSpan  float64 `json:"lonSpan"`
+}
+
 type AgenciesWithCoverageResponse struct {
 	Data struct {
-		LimitExceeded bool `json:"limitExceeded"`
-		List          []struct {
-			AgencyID string  `json:"agencyId"`
-			Lat      float64 `json:"lat"`
-			LatSpan  float64 `json:"latSpan"`
-			Lon      float64 `json:"lon"`
-			LonSpan  float64 `json:"lonSpan"`
-		} `json:"list"`
+		LimitExceeded bool                `json:"limitExceeded"`
+		List          []AgencyCoverageRow `json:"list"`
 	} `json:"data"`
 	Code int    `json:"code"`
 	Text string `json:"text"`
@@ -106,5 +109,8 @@ type SMSSession struct {
 	Language      string `json:"language"`
 	LastQueryTime int64  `json:"lastQueryTime"`
 	WindowMinutes int    `json:"windowMinutes"`
-	CreatedAt     int64  `json:"createdAt"`
+	// ArrivalHorizonShownMinutes is how many arrivals were already shown in this session (count / slice offset), not a time duration.
+	// The JSON name is historical; it is used as a continuation offset so "more" can return the next page of departures.
+	ArrivalHorizonShownMinutes int   `json:"arrivalHorizonShownMinutes"`
+	CreatedAt                  int64 `json:"createdAt"`
 }

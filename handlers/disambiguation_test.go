@@ -45,8 +45,8 @@ func (m *MockOneBusAwayClientDisambiguation) GetArrivalsAndDeparturesWithWindow(
 	return nil, fmt.Errorf("mock returned invalid type for GetArrivalsAndDeparturesWithWindow")
 }
 
-func (m *MockOneBusAwayClientDisambiguation) ProcessArrivals(resp *models.OneBusAwayResponse) []models.Arrival {
-	args := m.Called(resp)
+func (m *MockOneBusAwayClientDisambiguation) ProcessArrivals(resp *models.OneBusAwayResponse, maxMinutes int) []models.Arrival {
+	args := m.Called(resp, maxMinutes)
 	result := args.Get(0)
 	if result == nil {
 		return nil
@@ -173,8 +173,8 @@ func TestSMSHandler_SingleStopFound(t *testing.T) {
 	}
 
 	mockClient.On("FindAllMatchingStops", "12345").Return(mockStopOptions, nil)
-	mockClient.On("GetArrivalsAndDepartures", "1_12345").Return(mockResponse, nil)
-	mockClient.On("ProcessArrivals", mockResponse).Return(mockArrivals)
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "1_12345", 30).Return(mockResponse, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 30).Return(mockArrivals)
 
 	form := url.Values{}
 	form.Set("From", "+14444444444")
@@ -186,7 +186,7 @@ func TestSMSHandler_SingleStopFound(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "King County Metro: Test Stop")
+	assert.Contains(t, w.Body.String(), "Stop: Test Stop")
 	assert.Contains(t, w.Body.String(), "Route 8")
 	mockClient.AssertExpectations(t)
 }
@@ -291,8 +291,8 @@ func TestSMSHandler_DisambiguationChoice_Valid(t *testing.T) {
 		},
 	}
 
-	mockClient.On("GetArrivalsAndDepartures", "40_12345").Return(mockResponse, nil)
-	mockClient.On("ProcessArrivals", mockResponse).Return(mockArrivals)
+	mockClient.On("GetArrivalsAndDeparturesWithWindow", "40_12345", 30).Return(mockResponse, nil)
+	mockClient.On("ProcessArrivals", mockResponse, 30).Return(mockArrivals)
 
 	form := url.Values{}
 	form.Set("From", "+14444444444")
@@ -304,7 +304,7 @@ func TestSMSHandler_DisambiguationChoice_Valid(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "Sound Transit: University Street Station")
+	assert.Contains(t, w.Body.String(), "Stop: University Street Station")
 	assert.Contains(t, w.Body.String(), "Route Link")
 	mockClient.AssertExpectations(t)
 }
@@ -338,7 +338,9 @@ func TestSMSHandler_DisambiguationChoice_Invalid(t *testing.T) {
 }
 
 func TestSMSHandler_DisambiguationChoice_NoSession(t *testing.T) {
-	r, _, _ := setupDisambiguationTestRouter()
+	r, mockClient, _ := setupDisambiguationTestRouter()
+
+	mockClient.On("FindAllMatchingStops", "1").Return([]models.StopOption{}, nil)
 
 	form := url.Values{}
 	form.Set("From", "+14444444444")
@@ -350,7 +352,8 @@ func TestSMSHandler_DisambiguationChoice_NoSession(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "No active selection")
+	assert.Contains(t, w.Body.String(), "Sorry, no stops found with ID 1")
+	mockClient.AssertExpectations(t)
 }
 
 func TestSessionStore_SetAndGet(t *testing.T) {
@@ -475,10 +478,10 @@ func TestSessionStore_PhoneNumberValidation(t *testing.T) {
 	}{
 		{"Valid US phone number", "+14444444444", false},
 		{"Valid US phone number 2", "+15551234567", false},
+		{"Valid international phone number", "+48500100200", false},
 		{"Invalid format - no plus", "14444444444", true},
-		{"Invalid format - too short", "+144444444", true},
-		{"Invalid format - too long", "+144444444444", true},
-		{"Invalid format - not US", "+44123456789", true},
+		{"Invalid format - too short", "+1444444", true},
+		{"Invalid format - too long", "+14444444444444444", true},
 		{"Invalid format - empty", "", true},
 		{"Invalid format - letters", "+1abcdefghij", true},
 	}
@@ -487,8 +490,9 @@ func TestSessionStore_PhoneNumberValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := store.SetDisambiguationSession(tt.phoneNumber, session)
 			if tt.shouldError {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "invalid phone number format")
+				if assert.Error(t, err) {
+					assert.Contains(t, err.Error(), "invalid phone number format")
+				}
 			} else {
 				assert.NoError(t, err)
 				// Clean up valid entries

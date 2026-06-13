@@ -9,15 +9,26 @@ import (
 	"oba-twilio/models"
 )
 
-func FormatSMSResponse(arrivals []models.Arrival, stopName string) string {
+func FormatSMSResponse(arrivals []models.Arrival, stopName string, lm *localization.LocalizationManager, language string) string {
 	if len(arrivals) == 0 {
+		if lm != nil {
+			if msg := localizedOrEmpty(lm.GetString("sms.no_arrivals", language), "sms.no_arrivals"); msg != "" {
+				return msg
+			}
+		}
 		return "No upcoming arrivals found for this stop."
 	}
 
 	var response strings.Builder
+	stopLabel := "Stop"
+	if lm != nil {
+		if localized := localizedOrEmpty(lm.GetString("sms.arrival.stop_label", language), "sms.arrival.stop_label"); localized != "" {
+			stopLabel = localized
+		}
+	}
 
 	if stopName != "" {
-		response.WriteString(fmt.Sprintf("Stop: %s\n", stopName))
+		response.WriteString(fmt.Sprintf("%s: %s\n", stopLabel, stopName))
 	}
 
 	for i, arrival := range arrivals {
@@ -25,14 +36,28 @@ func FormatSMSResponse(arrivals []models.Arrival, stopName string) string {
 			break
 		}
 
-		timeText := formatArrivalTime(arrival.MinutesUntilArrival)
-		response.WriteString(fmt.Sprintf("Route %s to %s: %s\n",
-			arrival.RouteShortName,
-			arrival.TripHeadsign,
-			timeText))
+		timeText := formatArrivalTimeLocalized(arrival.MinutesUntilArrival, lm, language)
+		routeLine := ""
+		if lm != nil {
+			routeLine = localizedOrEmpty(
+				lm.GetString("sms.arrival.route_to", language, arrival.RouteShortName, arrival.TripHeadsign, timeText),
+				"sms.arrival.route_to",
+			)
+		}
+		if routeLine == "" {
+			routeLine = fmt.Sprintf("Route %s to %s: %s", arrival.RouteShortName, arrival.TripHeadsign, timeText)
+		}
+		response.WriteString(routeLine + "\n")
 	}
 
 	return strings.TrimSpace(response.String())
+}
+
+func localizedOrEmpty(value, key string) string {
+	if value == "" || value == key {
+		return ""
+	}
+	return value
 }
 
 // RouteGroup represents arrivals grouped by route and headsign
@@ -131,6 +156,25 @@ func formatArrivalTime(minutes int) string {
 	}
 }
 
+func formatArrivalTimeLocalized(minutes int, lm *localization.LocalizationManager, language string) string {
+	if lm != nil {
+		if minutes <= 0 {
+			if nowText := localizedOrEmpty(lm.GetString("voice.time.now", language), "voice.time.now"); nowText != "" {
+				return nowText
+			}
+		} else if minutes == 1 {
+			if oneMin := localizedOrEmpty(lm.GetString("voice.time.minute", language), "voice.time.minute"); oneMin != "" {
+				return oneMin
+			}
+		} else {
+			if manyMin := localizedOrEmpty(lm.GetString("voice.time.minutes", language, minutes), "voice.time.minutes"); manyMin != "" {
+				return manyMin
+			}
+		}
+	}
+	return formatArrivalTime(minutes)
+}
+
 func formatArrivalTimeVoice(minutes int) string {
 	if minutes <= 0 {
 		return "arriving now"
@@ -151,6 +195,8 @@ func formatArrivalTimeVoiceLocalized(minutes int, lm *localization.LocalizationM
 	}
 }
 
+// ExtractStopID returns the first whitespace-delimited token of message.
+// The token is not validated here; callers must use validation.ValidateStopID (or equivalent) before using it as a stop ID.
 func ExtractStopID(message string) string {
 	message = strings.TrimSpace(message)
 
@@ -163,18 +209,9 @@ func ExtractStopID(message string) string {
 		return ""
 	}
 
-	stopID := fields[0]
-
-	if len(stopID) >= 3 && len(stopID) <= 10 {
-		for _, char := range stopID {
-			if char < '0' || char > '9' {
-				return ""
-			}
-		}
-		return stopID
-	}
-
-	return ""
+	// For stop ID extraction we now trust the first token and let
+	// validation.ValidateStopID enforce the detailed rules (length, charset, security).
+	return fields[0]
 }
 
 func IsDisambiguationChoice(message string) int {
