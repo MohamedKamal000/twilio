@@ -382,6 +382,10 @@ type OneBusAwayClient struct {
 	config         *ClientConfig
 	circuitBreaker *CircuitBreaker
 	metrics        *Metrics
+	// agencyMu guards config.AgencyPriority, which is read by getAgencyList (from
+	// goroutines spawned by FindAllMatchingStops) and written by
+	// ensureAgencyIDsForSearch, InitializeCoverage, and SetAgencyPriority.
+	agencyMu sync.RWMutex
 }
 
 func NewOneBusAwayClient(baseURL, apiKey string) *OneBusAwayClient {
@@ -423,17 +427,22 @@ func NewOneBusAwayClientWithConfig(baseURL, apiKey string, config *ClientConfig)
 
 // getAgencyList returns the configured agency list with priority ordering.
 //
-// TODO(data-race): c.config.AgencyPriority is read here (called from goroutines
-// spawned by FindAllMatchingStops) while ensureAgencyIDsForSearch and
-// SetAgencyPriority write it without holding a mutex. The InitializeCoverage
-// cache-hit path now calls ensureAgencyIDsForSearch on every health check, which
-// makes a concurrent read/write more likely. Guard AgencyPriority with a mutex
-// (or store it atomically) in a follow-up.
+// Writers always replace the AgencyPriority slice (never mutate it in place), so
+// the returned slice header is safe to use after the read lock is released.
 func (c *OneBusAwayClient) getAgencyList() []string {
+	c.agencyMu.RLock()
+	defer c.agencyMu.RUnlock()
 	if len(c.config.AgencyPriority) > 0 {
 		return c.config.AgencyPriority
 	}
 	return c.config.DefaultAgencies
+}
+
+// storeAgencyPriority replaces the agency priority list under agencyMu.
+func (c *OneBusAwayClient) storeAgencyPriority(ids []string) {
+	c.agencyMu.Lock()
+	defer c.agencyMu.Unlock()
+	c.config.AgencyPriority = ids
 }
 
 // logAgencyIDsForSearch writes the agency ID list used for stop lookup (from cache or API).
@@ -469,7 +478,7 @@ func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
 	// 1) Fast path: valid cache
 	if cached, found := c.cache.Get(coverageAgencyIDsCacheKey); found {
 		if ids, ok := cached.([]string); ok && len(ids) > 0 {
-			c.config.AgencyPriority = ids
+			c.storeAgencyPriority(ids)
 			logAgencyIDsForSearch("cache hit (coverage_agency_ids)", ids)
 			return nil
 		}
@@ -479,7 +488,7 @@ func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
 	if cachedData, found, _ := c.cache.GetExpired(coverageAgencyIDsCacheKey); found {
 		if ids, ok := cachedData.([]string); ok && len(ids) > 0 {
 			// Keep searching with stale-but-available IDs.
-			c.config.AgencyPriority = ids
+			c.storeAgencyPriority(ids)
 			logAgencyIDsForSearch("cache expired (stale coverage_agency_ids)", ids)
 			log.Printf("[OBA] agencies-with-coverage cache expired; continuing with stale agency IDs until refresh succeeds")
 			return nil
@@ -552,7 +561,7 @@ func (c *OneBusAwayClient) ensureAgencyIDsForSearch() error {
 	}
 
 	// Apply to search ordering.
-	c.config.AgencyPriority = ids
+	c.storeAgencyPriority(ids)
 
 	// Cache for ~1 day.
 	c.cache.Set(coverageAgencyIDsCacheKey, ids, agenciesCacheTTLMinutes*time.Minute)
@@ -580,7 +589,7 @@ func (c *OneBusAwayClient) SetAgencyPriority(agencies []string) error {
 		}
 	}
 
-	c.config.AgencyPriority = agencies
+	c.storeAgencyPriority(agencies)
 	return nil
 }
 
@@ -694,7 +703,7 @@ func (c *OneBusAwayClient) InitializeCoverage() error {
 	agencyIDs := extractAgencyIDsFromCoverageList(coverageResp.Data.List)
 
 	if len(agencyIDs) > 0 {
-		c.config.AgencyPriority = agencyIDs
+		c.storeAgencyPriority(agencyIDs)
 		c.cache.Set(coverageAgencyIDsCacheKey, agencyIDs, agenciesCacheTTLMinutes*time.Minute)
 		logAgencyIDsForSearch("InitializeCoverage (agencies-with-coverage response)", agencyIDs)
 	}
