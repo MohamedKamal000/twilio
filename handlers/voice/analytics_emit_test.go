@@ -46,6 +46,41 @@ func newTestVoiceHandler(t *testing.T) (*Handler, *analytics.Manager, *analytics
 	return h, mgr, mock
 }
 
+func TestFindStopEmitsStopLookup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mgr, mock := newTestVoiceHandler(t)
+	defer func() { _ = mgr.Close() }()
+
+	// Wire in a real-enough OBA client so the stop lookup path executes.
+	mockClient := &mockOBAClient{}
+	expectSingleStopArrivals(mockClient, "12345", "1_12345", "8")
+	h.OBAClient = mockClient
+
+	r := gin.New()
+	r.POST("/voice/find_stop", h.HandleFindStop)
+
+	form := url.Values{"From": {"+15559876543"}, "Digits": {"12345"}}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/voice/find_stop", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := waitForEvents(t, mock, 1)
+	require.GreaterOrEqual(t, len(events), 1, "expected at least one analytics event")
+
+	var found bool
+	for _, e := range events {
+		if e.Name == analytics.EventStopLookupSuccess {
+			found = true
+			assert.Equal(t, "12345", e.Properties[analytics.PropStopID])
+		}
+	}
+	assert.True(t, found, "expected a stop_lookup_success event")
+	mockClient.AssertExpectations(t)
+}
+
 func TestMenuActionEmitsMenuChoice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mgr, mock := newTestVoiceHandler(t)
