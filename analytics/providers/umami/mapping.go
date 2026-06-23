@@ -47,8 +47,8 @@ func channelForEvent(name string) string {
 // with "Mozilla/5.0 " so Umami's isbot check does not drop the event.
 func buildUserAgent(event analytics.Event) string {
 	id := event.UserID
-	switch {
-	case id == "":
+	switch id {
+	case "":
 		id = "anon"
 	default:
 		r := []rune(id)
