@@ -50,8 +50,11 @@ func buildUserAgent(event analytics.Event) string {
 	switch {
 	case id == "":
 		id = "anon"
-	case len(id) > 12:
-		id = id[:12]
+	default:
+		r := []rune(id)
+		if len(r) > 12 {
+			id = string(r[:12])
+		}
 	}
 	return fmt.Sprintf("Mozilla/5.0 (OneBusAway-Twilio; %s; %s) Server/1.0", channelForEvent(event.Name), id)
 }
@@ -80,8 +83,9 @@ func sanitizeData(props map[string]interface{}) map[string]interface{} {
 }
 
 func truncate(s string) string {
-	if len(s) > maxDataValueLen {
-		return s[:maxDataValueLen]
+	r := []rune(s)
+	if len(r) > maxDataValueLen {
+		return string(r[:maxDataValueLen])
 	}
 	return s
 }

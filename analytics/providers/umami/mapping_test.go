@@ -3,6 +3,7 @@ package umami
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"oba-twilio/analytics"
 
@@ -82,6 +83,14 @@ func TestSanitizeData(t *testing.T) {
 	assert.NotContains(t, out, "nil_val")
 	assert.Equal(t, "{1}", out["struct"]) // stringified
 	assert.Len(t, out["long"], maxDataValueLen)
+
+	// Rune-safety: a 300-rune multi-byte string must truncate to exactly
+	// maxDataValueLen runes and remain valid UTF-8.
+	multiByteInput := strings.Repeat("é", 300) // "é" is 2 bytes in UTF-8
+	out2 := sanitizeData(map[string]interface{}{"mb": multiByteInput})
+	result, _ := out2["mb"].(string)
+	assert.Equal(t, maxDataValueLen, utf8.RuneCountInString(result), "truncation must count runes not bytes")
+	assert.True(t, utf8.ValidString(result), "truncated string must be valid UTF-8")
 }
 
 func TestIsSuccessfulIngest(t *testing.T) {
