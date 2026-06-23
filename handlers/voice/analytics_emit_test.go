@@ -1,0 +1,72 @@
+package voice
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"oba-twilio/analytics"
+	"oba-twilio/localization"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// waitForEvents polls the mock provider until it records at least n events or times out.
+func waitForEvents(t *testing.T, mock *analytics.MockProvider, n int) []analytics.Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if mock.GetEventCount() >= n {
+			return mock.GetEvents()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return mock.GetEvents()
+}
+
+func newTestVoiceHandler(t *testing.T) (*Handler, *analytics.Manager, *analytics.MockProvider) {
+	t.Helper()
+	locManager := localization.NewTestManager()
+
+	cfg := analytics.DefaultConfig()
+	cfg.Enabled = true
+	cfg.HashSalt = "test-salt"
+	mgr := analytics.NewManager(cfg)
+	require.NoError(t, mgr.Start())
+	mock := analytics.NewMockProvider()
+	require.NoError(t, mgr.RegisterProvider("mock", mock))
+
+	h := NewHandler(nil, locManager)
+	h.SetAnalytics(mgr, "test-salt")
+	return h, mgr, mock
+}
+
+func TestMenuActionEmitsMenuChoice(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mgr, mock := newTestVoiceHandler(t)
+	defer func() { _ = mgr.Close() }()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	form := url.Values{"From": {"+15551234567"}, "Digits": {"2"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/voice/menu_action", strings.NewReader(form.Encode()))
+	c.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	h.HandleVoiceMenuAction(c)
+
+	events := waitForEvents(t, mock, 1)
+	require.GreaterOrEqual(t, len(events), 1)
+	var found bool
+	for _, e := range events {
+		if e.Name == analytics.EventVoiceMenuChoice {
+			found = true
+			assert.Equal(t, "2", e.Properties[analytics.PropDTMFDigits])
+		}
+	}
+	assert.True(t, found, "expected a voice_menu_choice event")
+}
