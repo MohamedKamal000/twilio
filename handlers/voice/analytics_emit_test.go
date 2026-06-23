@@ -10,6 +10,7 @@ import (
 
 	"oba-twilio/analytics"
 	"oba-twilio/localization"
+	"oba-twilio/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -78,6 +79,46 @@ func TestFindStopEmitsStopLookup(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "expected a stop_lookup_success event")
+	mockClient.AssertExpectations(t)
+}
+
+func TestFindStopEmitsStopLookupFailureOnNoMatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mgr, mock := newTestVoiceHandler(t)
+	defer func() { _ = mgr.Close() }()
+
+	// No matching stops and no error: a user-facing failure, so analytics must
+	// record stop_lookup_failure, not stop_lookup_success.
+	mockClient := &mockOBAClient{}
+	mockClient.On("FindAllMatchingStops", "54321").Return([]models.StopOption{}, nil)
+	h.OBAClient = mockClient
+
+	r := gin.New()
+	r.POST("/voice/find_stop", h.HandleFindStop)
+
+	form := url.Values{"From": {"+15559876543"}, "Digits": {"54321"}}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/voice/find_stop", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := waitForEvents(t, mock, 1)
+	require.GreaterOrEqual(t, len(events), 1, "expected at least one analytics event")
+
+	var sawFailure, sawSuccess bool
+	for _, e := range events {
+		switch e.Name {
+		case analytics.EventStopLookupFailure:
+			sawFailure = true
+			assert.Equal(t, "54321", e.Properties[analytics.PropStopID])
+		case analytics.EventStopLookupSuccess:
+			sawSuccess = true
+		}
+	}
+	assert.True(t, sawFailure, "expected a stop_lookup_failure event for a zero-result lookup")
+	assert.False(t, sawSuccess, "a zero-result lookup must not emit stop_lookup_success")
 	mockClient.AssertExpectations(t)
 }
 

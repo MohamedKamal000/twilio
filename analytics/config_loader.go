@@ -164,10 +164,11 @@ func CreateManager(config Config) *Manager {
 	return NewManager(config)
 }
 
-// defaultUmamiHostname intentionally duplicates umami.DefaultHostname: the
-// analytics package configures the provider via a string map and does not import
-// the umami package. Keep both values in sync if either changes.
-const defaultUmamiHostname = "twilio.onebusaway.org"
+// DefaultUmamiHostname is the fallback payload hostname when none can be derived
+// from configuration. It is the single source of truth for this sentinel; the
+// umami provider's DefaultHostname aliases it (the analytics package configures
+// the provider via a string map and cannot import the umami package).
+const DefaultUmamiHostname = "twilio.onebusaway.org"
 
 // resolveUmamiHostname picks the payload hostname: explicit override, else the
 // host of ONEBUSAWAY_BASE_URL, else a fixed sentinel (never empty).
@@ -180,7 +181,7 @@ func resolveUmamiHostname(explicit, baseURL string) string {
 			return u.Host
 		}
 	}
-	return defaultUmamiHostname
+	return DefaultUmamiHostname
 }
 
 // loadUmamiConfig loads Umami provider configuration from the environment.

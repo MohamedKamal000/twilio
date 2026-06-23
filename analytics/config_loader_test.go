@@ -269,8 +269,8 @@ func TestCreateManager(t *testing.T) {
 func TestResolveUmamiHostname(t *testing.T) {
 	assert.Equal(t, "explicit.example.org", resolveUmamiHostname("explicit.example.org", "https://api.pugetsound.onebusaway.org"))
 	assert.Equal(t, "api.pugetsound.onebusaway.org", resolveUmamiHostname("", "https://api.pugetsound.onebusaway.org"))
-	assert.Equal(t, defaultUmamiHostname, resolveUmamiHostname("", ""))
-	assert.Equal(t, defaultUmamiHostname, resolveUmamiHostname("", "::not a url::"))
+	assert.Equal(t, DefaultUmamiHostname, resolveUmamiHostname("", ""))
+	assert.Equal(t, DefaultUmamiHostname, resolveUmamiHostname("", "::not a url::"))
 }
 
 func TestLoadUmamiConfig(t *testing.T) {

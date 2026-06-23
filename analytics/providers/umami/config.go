@@ -10,7 +10,8 @@ import (
 )
 
 // DefaultHostname is the fallback payload hostname when none can be derived.
-const DefaultHostname = "twilio.onebusaway.org"
+// It aliases analytics.DefaultUmamiHostname, the single source of truth.
+const DefaultHostname = analytics.DefaultUmamiHostname
 
 // Config holds configuration for the Umami provider.
 type Config struct {

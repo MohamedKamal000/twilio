@@ -34,7 +34,7 @@ The `analytics` package already implements a pluggable broker:
   `TrackVoiceRequest(...)`, `TrackStopLookup(...)`, `TrackError(...)`,
   `TrackDisambiguation*(...)`. Each dispatches on a goroutine.
 
-```
+```text
 handler → middleware.Track*  →  Manager (worker pool, circuit breaker)
                                    ├── plausible.Provider   (existing)
                                    └── umami.Provider        (NEW)
@@ -139,7 +139,7 @@ breaks isbot's anchored `^\w+/[\w()]*$` pattern — that's fragile and could bre
 isbot updates its pattern set. Instead, lead with a real browser prefix (the style
 Umami's own server-side docs use, `Mozilla/5.0 (Server)`):
 
-```
+```text
 Mozilla/5.0 (OneBusAway-Twilio; <Channel>; <first-12-of-hashed-caller>) Server/1.0
 ```
 

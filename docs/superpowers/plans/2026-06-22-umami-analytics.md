@@ -377,8 +377,10 @@ func sanitizeData(props map[string]interface{}) map[string]interface{} {
 }
 
 func truncate(s string) string {
-	if len(s) > maxDataValueLen {
-		return s[:maxDataValueLen]
+	// Truncate by rune so a multi-byte UTF-8 character is never split.
+	r := []rune(s)
+	if len(r) > maxDataValueLen {
+		return string(r[:maxDataValueLen])
 	}
 	return s
 }
